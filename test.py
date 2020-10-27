@@ -1,8 +1,12 @@
 
-from simerse import SimerseDataLoader, SimerseVisualizer, Visualize, BuiltinDimension
+import simerse.image_util
+import imageio
+import csv
 
-dl = SimerseDataLoader('D:/Training/UE4/VisualizeTest/meta.txt')
+im = imageio.imread('C:/Users/hauck/Pictures/Simerse/Tutorial/Unreal 4/Keypoints.png')
+encoded, uid_mapping = simerse.image_util.to_keypoint(im)
 
-vis = SimerseVisualizer(dl)
+imageio.imwrite('C:/Users/hauck/Pictures/Simerse/Tutorial/Unreal 4/KeypointsEncoded.png', encoded)
 
-vis.visualize(6, Visualize.position)
+with open('C:/Users/hauck/Documents/test.csv', 'w', newline='') as f:
+    csv.writer(f).writerows(uid_mapping)

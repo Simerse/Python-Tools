@@ -64,7 +64,6 @@ segmentation_rle_key = BuiltinDimension.segmentation_rle
 segmentation_polygon_key = BuiltinDimension.segmentation_polygon
 keypoints_key = BuiltinDimension.keypoints
 segmentation_outline_capture_key = BuiltinDimension.segmentation_outline
-keypoints_capture_key = BuiltinDimension.keypoints_capture
 uv_capture_key = BuiltinDimension.uv
 depth_capture_key = BuiltinDimension.depth
 world_normal_capture_key = BuiltinDimension.world_normal
@@ -97,7 +96,6 @@ capture_data_dimensions = {
     visual_hdr_capture_key,
     segmentation_capture_key,
     segmentation_outline_capture_key,
-    keypoints_capture_key,
     uv_capture_key,
     depth_capture_key,
     world_position_origin_key,
@@ -348,7 +346,8 @@ def SimerseDataLoader(meta_file, **custom_loaders):
 
         description = meta_dict[get_meta_key('Description')]
 
-        dimensions = meta_dict[get_meta_key('Summary')][get_meta_key('Dimensions')] + ['ObservationObjectUID']
+        dimensions = meta_dict[get_meta_key('Summary')][get_meta_key('Dimensions')] + ['ObservationObjectUID'] + \
+            list(custom_loaders)
 
         num_observations = meta_dict[get_meta_key('Summary')][get_meta_key('Total Observations')]
 
@@ -452,6 +451,8 @@ License:
         log(f'Loading capture {capture_name} for observation {point}', 2)
         observation = SimerseDataLoaderInstance.load_observation(point)
         return observation[capture_data_key][capture_name]
+
+    SimerseDataLoaderInstance.load_capture_name = staticmethod(load_capture_name)
 
     for default_capture_dimension in default_capture_dimensions:
         if default_capture_dimension not in dimensions_set:

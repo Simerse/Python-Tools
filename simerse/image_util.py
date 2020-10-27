@@ -203,3 +203,35 @@ def draw_points(points, im, color, size):
         ), fill=color)
 
     return np.array(im)
+
+
+def index_to_color(index):
+    return index & 0xFF, (index >> 8) & 0xFF, (index >> 16) & 0xFF
+
+
+def to_color_hex(val):
+    if val < 16:
+        return '0' + hex(val)[2:]
+    else:
+        return hex(val)[2:]
+
+
+def rgb_to_hex(rgb):
+    return '#' + to_color_hex(rgb[0]) + to_color_hex(rgb[1]) + to_color_hex(rgb[2])
+
+
+def to_keypoint(im):
+    im = to_int(im)[:, :, :3]
+    colors = set(map(lambda color: tuple(map(int, color)), im.reshape((im.shape[0] * im.shape[1], 3))))
+    colors.remove((0, 0, 0))
+    encoded = np.zeros_like(im)
+    color_mapping = {color: i + 1 for i, color in zip(range(len(colors)), colors)}
+    for color, index in color_mapping.items():
+        eq = (im == color)
+        no_channel = eq[:, :, 0] * eq[:, :, 1] * eq[:, :, 2]
+        n = np.sum(no_channel)
+        eq = np.stack((no_channel,) * 3, axis=2)
+        encoded[eq] = index_to_color(index) * n
+    return encoded, [('Local Keypoint UID', 'Original Color')] + list(
+        (index, rgb_to_hex(color)) for color, index in color_mapping.items()
+    )
