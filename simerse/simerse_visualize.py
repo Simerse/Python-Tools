@@ -1,4 +1,5 @@
 from simerse import image_util
+from simerse.tonemapping import Reinhard
 import numpy as np
 import matplotlib.pyplot as plt
 import imageio
@@ -87,7 +88,7 @@ class SegmentationVisualizer:
         return type(self.data_loader).cache['visualize_cached_color_mapping']
 
     def visualize(self, observation_uid,
-                  mode='overlay',
+                  mode='overlay', mapping=None,
                   object_name_filter=None, object_uid_filter=None,
                   overlay_alpha=.7,
                   outline=False, line_thickness=4, joint=None,
@@ -159,9 +160,16 @@ class SegmentationVisualizer:
                                 f' Dimensions are {self.data_loader.dimensions}')
 
         if mode == 'overlay':
-            visual = image_util.to_int(
-                image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_ldr))[:, :, :3]
-            )
+            if BuiltinDimension.visual_ldr in self.data_loader.dimensions and mapping is None:
+                visual = image_util.to_int(
+                    image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_ldr))[:, :, :3]
+                )
+            else:
+                if mapping is None:
+                    mapping = Reinhard()
+                visual = image_util.to_int(mapping(
+                    image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_hdr))[:, :, :3]
+                ))
             overlay = color_mapping[capture]
             zero_mask = (overlay == np.zeros((1, 1, 3), dtype=np.uint8)).astype(np.uint8)
             overlay_im = visual * zero_mask + (1 - zero_mask) * (
@@ -227,7 +235,7 @@ class BoundingBox2DVisualizer:
 
     def visualize(self, observation_uid,
                   object_name_filter=None, object_uid_filter=None,
-                  kind='total',
+                  kind='total', mapping=None,
                   line_thickness=1, joint=None,
                   show_names=True, name_font_size=12,
                   save_on_finish=None):
@@ -245,9 +253,16 @@ class BoundingBox2DVisualizer:
                 raise ValueError('Please install PIL to use image drawing functions.')
             font = ImageFont.truetype('arial.ttf', size=name_font_size)
 
-        im = image_util.to_int(
-            image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_ldr))[:, :, :3]
-        )
+        if BuiltinDimension.visual_ldr in self.data_loader.dimensions and mapping is None:
+            im = image_util.to_int(
+                image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_ldr))[:, :, :3]
+            )
+        else:
+            if mapping is None:
+                mapping = Reinhard()
+            im = image_util.to_int(mapping(
+                image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_hdr))[:, :, :3]
+            ))
 
         if kind == 'total':
             if BuiltinDimension.bounding_box_2d_total in self.data_loader.dimensions:
@@ -514,7 +529,7 @@ class KeypointsVisualizer:
         self.data_loader = data_loader
 
     def visualize(self, observation_uid, color=(0, 255, 0, 255), point_size=4,
-                  object_name_filter=None, object_uid_filter=None,
+                  object_name_filter=None, object_uid_filter=None, mapping=None,
                   save_on_finish=None):
         object_filter = make_object_uid_filter(object_name_filter, object_uid_filter,
                                                self.data_loader.object_uid_name_mapping.uid_to_name)
@@ -528,9 +543,16 @@ class KeypointsVisualizer:
                 all_keypoints.extend(keypoint_list)
             keypoints = [(all_keypoints[i], all_keypoints[i + 1]) for i in range(0, len(all_keypoints), 2)
                          if all_keypoints[i] != self.data_loader.na_value]
-            im = image_util.to_int(
-                image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_ldr))
-            )
+            if BuiltinDimension.visual_ldr in self.data_loader.dimensions and mapping is None:
+                im = image_util.to_int(
+                    image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_ldr))
+                )
+            else:
+                if mapping is None:
+                    mapping = Reinhard()
+                im = image_util.to_int(mapping(
+                    image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_hdr))
+                ))
             vis = image_util.draw_points(keypoints, im, color, point_size)
             plt.imshow(vis)
             plt.show()
