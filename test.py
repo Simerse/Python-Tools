@@ -1,12 +1,13 @@
 
-import simerse.image_util
-import imageio
-import csv
+from simerse import simerse_data_loader
+from simerse import simerse_visualize
+from simerse import simerse_keys
 
-im = imageio.imread('C:/Users/hauck/Pictures/Simerse/Tutorial/Unreal 4/Keypoints.png')
-encoded, uid_mapping = simerse.image_util.to_keypoint(im)
 
-imageio.imwrite('C:/Users/hauck/Pictures/Simerse/Tutorial/Unreal 4/KeypointsEncoded.png', encoded)
+dl = simerse_data_loader.SimerseDataLoader('D:/Projects/UE4/NewPluginTest/'
+                                           'DefaultSimerseOutput/DefaultSimerseDatasetMeta.txt')
 
-with open('C:/Users/hauck/Documents/test.csv', 'w', newline='') as f:
-    csv.writer(f).writerows(uid_mapping)
+vis = simerse_visualize.SimerseVisualizer(dl)
+
+vis.visualize(3, simerse_keys.Visualize.segmentation, mode='raw')
+

@@ -1,59 +1,112 @@
 
 from enum import Enum, unique
 
+# This is a checkmark
+# ✓
+
 
 @unique
 class Visualize(Enum):
-    visual_ldr = 0              # ✓
-    visual_ldr_video = 16
-    visual_hdr = 1              # ✓
-    visual_hdr_video = 17
-    segmentation = 2            # ✓
-    segmentation_video = 18
-    bounding_box_2d = 3         # ✓
-    bounding_box_2d_video = 19
-    bounding_box_3d = 4
-    bounding_box_3d_video = 20
-    keypoints = 5
-    keypoints_video = 21
-    depth = 6                   # ✓
-    depth_video = 22
-    uv = 8                      # ✓
-    uv_video = 23
-    position = 9
-    position_video = 24
-    normal = 10                 # ✓
-    normal_video = 25
-    tangent = 11                # ✓
-    tangent_video = 26
-    bitangent = 12              # ✓
-    bitangent_video = 27
-    custom = 15
+    visual_ldr = 0              #
+    visual_hdr = 1              #
+    segmentation = 2            #
+    bounding_box_2d = 3         #
+    bounding_box_3d = 4         #
+    keypoints = 5               #
+    depth = 6                   #
+    uv = 8                      #
+    position = 9                #
+    normal = 10                 #
+    tangent = 11                #
+    bitangent = 12              #
+    custom = 15                 #
 
 
 class BuiltinDimension:
     object_uid = 'ObservationObjectUID'
-    visual_ldr = 'VisualLDR_Capture'
-    visual_hdr = 'VisualHDR_Capture'
-    segmentation = 'Segmentation_Capture'
-    segmentation_rle = 'Segmentation_RLE'
-    segmentation_outline = 'SegmentationOutline_Capture'
-    segmentation_polygon = 'SegmentationOutline_Polygon'
-    bounding_box_2d_total = 'ImageAligned2DTotalBoundingBox'
-    bounding_box_2d_contiguous = 'ImageAligned2DContiguousBoundingBox'
-    bounding_box_3d_local = 'LocallyAligned3DBoundingBox'
-    bounding_box_3d_global = 'GloballyAligned3DBoundingBox'
-    bounding_box_3d_custom = 'Custom3DBoundingBox'
-    keypoints = 'Keypoints'
-    depth = 'Depth_Capture'
-    camera_transform = 'CameraTransform'
-    camera_projection = 'CameraProjectionType'
-    camera_view = 'CameraViewParameter'
-    uv = 'UV_Capture'
-    world_position = 'WorldPosition_Capture'
-    world_normal = 'WorldNormal_Capture'
-    world_tangent = 'WorldTangent_Capture'
-    world_bitangent = 'WorldBitangent_Capture'
-    object_transform = 'ObjectTransformation'
-    time = 'Time'
-    world_origin = 'WorldPositionOrigin'
+
+    world_tangent = 'WorldTangent'
+    world_bitangent = 'WorldBitangent'
+    world_normal = 'WorldNormal'
+
+    visual_ldr = 'VisualLDR'
+    visual_hdr = 'VisualHDR'
+
+    segmentation = 'Segmentation'
+    segmentation_outline = 'SegmentationOutline'
+
+    keypoint = 'Keypoint'
+
+    uv = 'UV'
+
+    position = 'Position'
+
+    depth = 'Depth'
+
+    local_bounding_box_3d = 'LocallyBoundingBox3D'
+    global_bounding_box_3d = 'GlobalBoundingBox3D'
+    custom_bounding_box_3d = 'CustomBoundingBox3D'
+
+    total_bounding_box_2d = 'TotalBoundingBox2D'
+    connected_bounding_box_2d = 'ConnectedBoundingBox2D'
+
+    time = 'ObservationTime'
+    object_transform = 'ObjectGlobalTransform'
+    mesh_name = 'StaticMeshName'
+    unreal_name = 'UnrealObjectName'
+    camera_view = 'CameraView'
+
+
+class MetaKey:
+    batch_file_format = 'Batch File Format'
+    dataset_name = 'Dataset Name'
+    description = 'Description'
+    summary = 'Summary'
+    dimensions = 'Dimensions'
+    observation_count = 'Total Observations'
+    batch_size = 'Observation Batch Size'
+    license = 'License'
+    start_time = 'Generation Start Time'
+    end_time = 'Generation End Time'
+
+    defaults = {
+        batch_file_format: 'Detect',
+        dataset_name: 'Unknown--Dataset Incomplete',
+        description: 'An incomplete dataset',
+        license: 'No license',
+        start_time: '',
+        end_time: ''
+    }
+    summary_defaults = {
+        dimensions: [],
+        observation_count: 1,
+        batch_size: 1
+    }
+
+    dataset_folder = 'Dataset Folder'
+
+
+class BatchKey:
+    batch_uid = 'ObservationBatchUID'
+    observation_uid = 'ObservationUID'
+    object_uid = 'ObservationObjectUID'
+    xml_batch = 'ObservationBatch'
+    xml_observation = 'Observation'
+    observations = 'Observations'
+    per_observer_values = 'PerObserverValues'
+    per_observation_values = 'PerObservationValues'
+    object_values = 'ObservationObjectValues'
+    observer_name = 'ObserverName'
+    xml_object_value = 'ObservationObjectValue'
+    xml_array_element = 'AE'
+    xml_map_pair = 'MP'
+    xml_map_key = 'K'
+    xml_map_value = 'V'
+    xml_dimension_value = 'DimensionValue'
+    xml_dimension_name = 'Name'
+    xml_observer_value = 'Observer'
+    xml_observer_name = 'Name'
+    csv_observation_uid_col = 0
+    csv_observer_col = 1
+    csv_object_uid_col = 2
+    csv_first_dimension_col_index = 3

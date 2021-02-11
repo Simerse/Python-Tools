@@ -205,6 +205,10 @@ def draw_points(points, im, color, size):
     return np.array(im)
 
 
+def draw_3d_boxes(im, boxes, colors, depth, camera_params, text_locations, text_values):
+    pass
+
+
 def index_to_color(index):
     return index & 0xFF, (index >> 8) & 0xFF, (index >> 16) & 0xFF
 

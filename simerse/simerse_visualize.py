@@ -97,9 +97,10 @@ class SegmentationVisualizer:
                                                self.data_loader.object_uid_name_mapping.uid_to_name)
         color_mapping = self.color_mapping
 
-        if mode == 'overlay' and BuiltinDimension.visual_ldr not in self.data_loader.dimensions:
+        if mode == 'overlay' and BuiltinDimension.visual_ldr not in self.data_loader.dimensions and \
+                BuiltinDimension.visual_hdr not in self.data_loader.dimensions:
             raise ValueError(f'Cannot use \'overlay\' mode for segmentation visualization for dataset '
-                             f'{self.data_loader.name} because the dataset does not have a Visual LDR dimension.'
+                             f'{self.data_loader.name} because the dataset does not have a Visual LDR or HDR dimension.'
                              f' Dimensions are {self.data_loader.dimensions}')
 
         if not outline:
@@ -149,7 +150,6 @@ class SegmentationVisualizer:
                 final_polygon, final_uid = tuple(zip(*filter(
                     lambda x: x[0] != self.data_loader.na_value and object_filter(x[1]), ply_uid
                 )))
-                print(final_uid)
                 capture = image_util.draw_polygons(
                     final_polygon, final_uid,
                     (self.data_loader.capture_resolution.height, self.data_loader.capture_resolution.width), fill=False,
@@ -239,9 +239,10 @@ class BoundingBox2DVisualizer:
                   line_thickness=1, joint=None,
                   show_names=True, name_font_size=12,
                   save_on_finish=None):
-        if BuiltinDimension.visual_ldr not in self.data_loader.dimensions:
+        if BuiltinDimension.visual_ldr not in self.data_loader.dimensions and \
+                BuiltinDimension.visual_hdr not in self.data_loader.dimensions:
             raise TypeError(f'Cannot visualize 2d bounding boxes for dataset {self.data_loader.name} because'
-                            f' the dataset does not have a Visual LDR dimension. Dimensions are '
+                            f' the dataset does not have a Visual LDR or Visual HDR dimension. Dimensions are '
                             f'{self.data_loader.dimensions}')
 
         object_filter = make_object_uid_filter(object_name_filter, object_uid_filter,
@@ -346,6 +347,115 @@ class BoundingBox2DVisualizer:
             imageio.imwrite(save_on_finish, vis)
 
 
+def to_local_boxes(global_boxes, box_format):
+    return global_boxes
+
+
+class BoundingBox3DVisualizer:
+    def __init__(self, data_loader):
+        self.data_loader = data_loader
+
+    @property
+    def color_mapping(self):
+        if 'visualize_cached_color_mapping' not in type(self.data_loader).cache:
+            max_uid = max(self.data_loader.object_uid_name_mapping.uid_to_name.keys())
+            type(self.data_loader).cache['visualize_cached_color_mapping'] = \
+                np.random.random_integers(50, 256, (max_uid + 1, 3)).astype(np.uint8)
+            type(self.data_loader).cache['visualize_cached_color_mapping'][0] = (0, 0, 0)
+        return type(self.data_loader).cache['visualize_cached_color_mapping']
+
+    def visualize(self, observation_uid,
+                  object_name_filter=None, object_uid_filter=None,
+                  kind='local', mapping=None,
+                  line_thickness=1, joint=None,
+                  show_names=True, name_font_size=12):
+        if BuiltinDimension.visual_ldr not in self.data_loader.dimensions and \
+                BuiltinDimension.visual_hdr not in self.data_loader.dimensions:
+            raise TypeError(f'Cannot visualize 3d bounding boxes for dataset {self.data_loader.name} because'
+                            f' the dataset does not have a Visual LDR or Visual HDR dimension. Dimensions are '
+                            f'{self.data_loader.dimensions}')
+
+        if BuiltinDimension.camera_view not in self.data_loader.dimension or \
+                BuiltinDimension.camera_transform not in self.data_loader.dimensions:
+            raise TypeError(f'Cannot visualize 3d bounding boxes for dataset {self.data_loader.name} because'
+                            f' the dataset does not have Camera view and transform dimensions. Dimensions are '
+                            f'{self.data_loader.dimensions}')
+
+        if BuiltinDimension.depth not in self.data_loader.dimensions:
+            import warnings
+            warnings.warn(f"Dataset {self.data_loader.name} does not have a Depth dimension; 3d bounding boxes will"
+                          f" not be occluded properly.")
+
+        object_filter = make_object_uid_filter(object_name_filter, object_uid_filter,
+                                               self.data_loader.object_uid_name_mapping.uid_to_name)
+
+        font = None
+        if show_names:
+            if ImageFont is None:
+                raise ValueError('Please install PIL to use image drawing functions.')
+            font = ImageFont.truetype('arial.ttf', size=name_font_size)
+
+        if BuiltinDimension.visual_ldr in self.data_loader.dimensions and mapping is None:
+            im = image_util.to_int(
+                image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_ldr))[:, :, :3]
+            )
+        else:
+            if mapping is None:
+                mapping = Reinhard()
+            im = image_util.to_int(mapping(
+                image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_hdr))[:, :, :3]
+            ))
+
+        camera_transform, camera_view, camera_type = self.data_loader.load(
+            observation_uid,
+            (BuiltinDimension.camera_transform, BuiltinDimension.camera_view, BuiltinDimension.camera_projection)
+        )
+
+        if kind == 'local':
+            if BuiltinDimension.bounding_box_3d_local not in self.data_loader.dimensions:
+                raise TypeError(f'Dataset {self.data_loader.name} does not have required dimension '
+                                f'{BuiltinDimension.bounding_box_3d_local}. Cannot visualize 3d local bounding boxes.'
+                                f' Dimensions are {self.data_loader.dimensions}.')
+
+            boxes_uids = zip(*self.data_loader.load(
+                observation_uid, (BuiltinDimension.bounding_box_3d_local, BuiltinDimension.object_uid)
+            ))
+            boxes, uids = tuple(zip(*filter(lambda x: x[0] != self.data_loader.na_value and object_filter(x[1]),
+                                            boxes_uids)))
+            colors = self.color_mapping[list(uids)]
+        elif kind == 'global':
+            if BuiltinDimension.bounding_box_3d_local not in self.data_loader.dimensions:
+                raise TypeError(f'Dataset {self.data_loader.name} does not have required dimension '
+                                f'{BuiltinDimension.bounding_box_3d_local}. Cannot visualize 3d global bounding boxes.'
+                                f' Dimensions are {self.data_loader.dimensions}.')
+
+            boxes_uids = zip(*self.data_loader.load(
+                observation_uid, (BuiltinDimension.bounding_box_3d_local, BuiltinDimension.object_uid)
+            ))
+            boxes, uids = tuple(zip(*filter(lambda x: x[0] != self.data_loader.na_value and object_filter(x[1]),
+                                            boxes_uids)))
+            colors = self.color_mapping[list(uids)]
+            boxes = to_local_boxes(boxes, self.data_loader.box_format3d)
+        elif kind == 'custom':
+            if BuiltinDimension.bounding_box_3d_local not in self.data_loader.dimensions:
+                raise TypeError(f'Dataset {self.data_loader.name} does not have required dimension '
+                                f'{BuiltinDimension.bounding_box_3d_local}. Cannot visualize 3d custom bounding boxes.'
+                                f' Dimensions are {self.data_loader.dimensions}.')
+
+            boxes_uids = zip(*self.data_loader.load(
+                observation_uid, (BuiltinDimension.bounding_box_3d_local, BuiltinDimension.object_uid)
+            ))
+            boxes, uids = tuple(zip(*filter(lambda x: x[0] != self.data_loader.na_value and object_filter(x[1]),
+                                            boxes_uids)))
+            colors = self.color_mapping[list(uids)]
+        else:
+            raise ValueError(f'Cannot visualize 3d bounding boxes for dataset {self.data_loader.name} with invalid'
+                             f' bounding box kind {kind}. Must be one of "local", "global" or "custom"')
+
+        if show_names:
+            pass  # calculate text locations
+
+
 class DepthVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
@@ -358,7 +468,9 @@ class DepthVisualizer:
                 dist = ecdf(depth.flatten())
                 depth = np.stack([(dist(depth) * 255).astype(np.uint8)] * 3, axis=2)
             elif mapping is not None:
-                depth = np.stack([(mapping(depth) * 255).astype(np.uint8)] * 3, axis=2)
+                depth = (mapping(depth) * 255).astype(np.uint8)
+                if len(depth.shape) == 2:
+                    depth = np.stack([depth] * 3, axis=2)
             plt.imshow(depth)
             plt.show()
             if save_on_finish is not None:
@@ -531,6 +643,12 @@ class KeypointsVisualizer:
     def visualize(self, observation_uid, color=(0, 255, 0, 255), point_size=4,
                   object_name_filter=None, object_uid_filter=None, mapping=None,
                   save_on_finish=None):
+        if BuiltinDimension.visual_ldr not in self.data_loader.dimensions and \
+                BuiltinDimension.visual_hdr not in self.data_loader.dimensions:
+            raise TypeError(f'Cannot visualize keypoints for dataset {self.data_loader.name} because'
+                            f' the dataset does not have a Visual LDR or Visual HDR dimension. Dimensions are '
+                            f'{self.data_loader.dimensions}')
+
         object_filter = make_object_uid_filter(object_name_filter, object_uid_filter,
                                                self.data_loader.object_uid_name_mapping.uid_to_name)
 
