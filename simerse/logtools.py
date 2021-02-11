@@ -67,7 +67,7 @@ class Logger:
     """
 
     def __init__(self):
-        self.verbosity = LogVerbosity.ERRORS
+        self.verbosity = LogVerbosity.WARNINGS
 
     def verbosity_temp(self, contextual_verbosity):
         """

@@ -106,3 +106,51 @@ box_hullers = {
 
 def get_box_huller(box_format):
     return box_hullers[box_format]
+
+
+to_min_max_converters_2d = {
+    BoxFormat.min_max: lambda box: box,
+    BoxFormat.min_extents: lambda box: (box[0], box[1], box[0] + box[2], box[1] + box[3]),
+    BoxFormat.center_extents: lambda box: (box[0] - .5 * box[2], box[1] - .5 * box[3],
+                                           box[0] + .5 * box[2], box[1] + .5 * box[3]),
+    BoxFormat.center_half: lambda box: (box[0] - box[2], box[1] - box[3], box[0] + box[2], box[1] + box[3])
+}
+
+from_min_max_converters_2d = {
+    BoxFormat.min_max: lambda box: box,
+    BoxFormat.min_extents: lambda box: (box[0], box[1], box[2] - box[0], box[3] - box[1]),
+    BoxFormat.center_extents: lambda box: (.5 * (box[0] + box[2]), .5 * (box[1] + box[3]),
+                                           box[2] - box[0], box[3] - box[1]),
+    BoxFormat.center_half: lambda box: (.5 * (box[0] + box[2]), .5 * (box[1] + box[3]),
+                                        .5 * (box[2] - box[0]), .5 * (box[3] - box[1]))
+}
+
+to_min_max_converters_3d = {
+    BoxFormat.min_max: lambda box: box,
+    BoxFormat.min_extents: lambda box: (box[0], box[1], box[2],
+                                        box[0] + box[3], box[1] + box[4], box[2] + box[5]),
+    BoxFormat.center_extents: lambda box: (box[0] - .5 * box[3], box[1] - .5 * box[4], box[2] - .5 * box[5],
+                                           box[0] + .5 * box[3], box[1] + .5 * box[4], box[2] + .5 * box[5]),
+    BoxFormat.center_half: lambda box: (box[0] - box[3], box[1] - box[4], box[2] - box[5],
+                                        box[0] + box[3], box[1] + box[4], box[2] + box[5])
+}
+
+from_min_max_converters_3d = {
+    BoxFormat.min_max: lambda box: box,
+    BoxFormat.min_extents: lambda box: (box[0], box[1], box[2],
+                                        box[3] - box[0], box[4] - box[1], box[5] - box[2]),
+    BoxFormat.center_extents: lambda box: (.5 * (box[0] + box[3]), .5 * (box[1] + box[4]), .5 * (box[2] + box[5]),
+                                           box[3] - box[0], box[4] - box[1], box[5] - box[2]),
+    BoxFormat.center_half: lambda box: (.5 * (box[0] + box[3]), .5 * (box[1] + box[4]), .5 * (box[2] + box[5]),
+                                        .5 * (box[3] - box[0]), .5 * (box[4] - box[1]), .5 * (box[5] - box[2]))
+}
+
+
+def convert_single_2d(box, src_format, dst_format):
+    return from_min_max_converters_2d[dst_format](to_min_max_converters_2d[dst_format](box)) if src_format != dst_format \
+        else box
+
+
+def convert_single_3d(box, src_format, dst_format):
+    return from_min_max_converters_3d[dst_format](to_min_max_converters_3d[dst_format](box)) if src_format != dst_format \
+        else box

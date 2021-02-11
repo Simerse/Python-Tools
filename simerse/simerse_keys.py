@@ -56,6 +56,17 @@ class BuiltinDimension:
     unreal_name = 'UnrealObjectName'
     camera_view = 'CameraView'
 
+    _inverse_mapping = None
+
+    @staticmethod
+    def get_standard_name(dimension_name):
+        if BuiltinDimension._inverse_mapping is None:
+            BuiltinDimension._inverse_mapping = {}
+            for dimension, value in BuiltinDimension.__dict__:
+                if dimension != '_inverse_mapping':
+                    BuiltinDimension._inverse_mapping[value] = dimension
+        return BuiltinDimension._inverse_mapping.get(dimension_name, dimension_name)
+
 
 class MetaKey:
     batch_file_format = 'Batch File Format'
@@ -110,3 +121,11 @@ class BatchKey:
     csv_observer_col = 1
     csv_object_uid_col = 2
     csv_first_dimension_col_index = 3
+    uri = 'URI'
+    resolution = 'Resolution'
+    position_capture = 'Capture'
+    position_coordinates_origin = 'Position Coordinates Origin'
+    actor_bounding_box = 'ActorBoundingBox'
+    object_bounding_box = 'ObjectBoundingBox'
+    camera_transform_matrix = 'Global Transform'
+    spline_object_transform = 'Global Transform'

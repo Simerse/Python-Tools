@@ -109,6 +109,14 @@ License:
         except AttributeError:
             return 'Length Unknown'
 
+    def attach_loader(self, dimension, new_loader):
+        if dimension in self.dimensions:
+            new_loader = loader(new_loader)
+            new_loader.__set_name__(type(self), dimension)
+        else:
+            raise ValueError(f'Could not attach loader to dimension {dimension} because this dataset does not have '
+                             f'that dimension')
+
     def load(self, points, dimensions='all'):
         if dimensions == 'all':
             dimensions = type(self).dimensions

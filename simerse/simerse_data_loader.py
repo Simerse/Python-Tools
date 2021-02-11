@@ -5,15 +5,15 @@ import os
 from simerse import image_util, data_loader, logtools, iotools
 
 try:
-    import torch as array_provider
-    array_maker = array_provider.tensor
-    image_maker = image_util.to_torch
+    import torch as default_array_provider
+    default_array_maker = default_array_provider.tensor
+    default_image_maker = image_util.to_torch
 except ImportError:
-    import numpy as array_provider
-    array_maker = array_provider.array
-    image_maker = image_util.to_numpy
+    import numpy as default_array_provider
+    default_array_maker = default_array_provider.array
+    default_image_maker = image_util.to_numpy
 
-from simerse.box_format import BoxFormat
+from simerse.box_format import BoxFormat, convert_single_2d, convert_single_3d
 
 from simerse.simerse_keys import BuiltinDimension, MetaKey, BatchKey
 
@@ -42,6 +42,8 @@ def get_batch_file_path(root, batch_uid):
 ImageResolution = namedtuple('ImageResolution', ('width', 'height'))
 ImageCoordinatesPoint = namedtuple('ImageCoordinatesPoint', ('x', 'y'))
 SimerseLoaderCache = namedtuple('SimerseLoaderCache', ('batches', 'batch_sizes', 'batch_queue', 'total_cache_size'))
+ObservationValue = namedtuple('ObservationValue', ('value', 'object_values'))
+BoundingBoxPair = namedtuple('BoundingBoxPair', ('actor', 'object'))
 
 box_format_mapping = {
     'MIN_MAX': BoxFormat.min_max,
@@ -54,6 +56,15 @@ box_format_mapping = {
 class CacheLimitExceededWarning(Warning):
     pass
 
+
+class LoaderIgnoredWarning(Warning):
+    pass
+
+
+class LoaderNotFoundWarning(Warning):
+    pass
+
+
 # ==== End configuration stuff ====
 
 
@@ -63,23 +74,11 @@ def get_box_format(meta_format):
     return box_format_mapping[meta_format]
 
 
-def parse_list_of_integers(list_string):
-    return list(map(int, list_string.strip('][').split(',')))
-
-
-def parse_list_of_floats(list_string):
-    return list(map(int, list_string.strip('][').split(',')))
-
-
-def parse_list_of_strings(list_string):
-    return list(map(lambda s: s.strip('"'), list_string.strip('][').split(',')))
-
-
 def process_depth_capture(raw):
-    return array_maker([raw[:, :, 0]])
+    return [raw[:, :, 0]]
 
 
-def process_world_position_capture(raw, origin):
+def process_position_capture(raw, origin):
     import numpy as np
 
     origin = np.array(origin)
@@ -90,7 +89,11 @@ def process_integer_capture(raw):
     import numpy as np
 
     raw = raw.astype(np.uint32)
-    return array_maker((raw[:, :, 0] | (raw[:, :, 1] << 8) | (raw[:, :, 2] << 16)).astype(np.int32))
+    return (raw[:, :, 0] | (raw[:, :, 1] << 8) | (raw[:, :, 2] << 16)).astype(np.int32)
+
+
+def process_norm_vector_capture(raw):
+    return raw[:, :, :3] * 2 - 1
 
 
 def load_meta(meta, logger):
@@ -141,31 +144,453 @@ def attach_load_batch_function(meta_dict, clazz, root, logger):
         ))
 
 
-# noinspection PyPep8Naming
-Mebibytes = 2 ** 20
+def attach_load_object_uid_function(cls):
+
+    @data_loader.loader
+    def load_object_uid(points):
+        uid_map = {None: []}
+        processed_points = 0
+        for point in points:
+            observation = cls.load_observation(point)
+
+            uid_map[None].append(cls.array_maker(
+                object_value[BatchKey.object_uid] for object_value in
+                observation[BatchKey.per_observation_values][BatchKey.object_values]
+            ))
+
+            for observer, value in observation[BatchKey.per_observer_values].items():
+                observer_uids = uid_map.setdefault(observer, [])
+                observer_uids.append(cls.array_maker(
+                    object_value[BatchKey.object_uid] for object_value in
+                    value[BatchKey.object_values]
+                ))
+
+            processed_points += 1
+
+            for uid_list in uid_map.values():
+                if len(uid_list) != processed_points:
+                    uid_list.append(cls.array_maker(tuple()))
+
+        return uid_map
+
+    load_object_uid.__set_name__(cls, BuiltinDimension.object_uid)
+
+
+def is_image_ref(data):
+    return len(data) == 2 and BatchKey.uri in data and BatchKey.resolution in data
+
+
+_default_image_loaders = {}
+
+
+def get_default_image_loaders():
+    global _default_image_loaders
+
+    if len(_default_image_loaders) == 0:
+        import imageio
+        _default_image_loaders = {
+            BuiltinDimension.world_tangent: lambda image_ref:
+                process_norm_vector_capture(imageio.imread(image_ref[BatchKey.uri])),
+            BuiltinDimension.world_bitangent: lambda image_ref:
+                process_norm_vector_capture(imageio.imread(image_ref[BatchKey.uri])),
+            BuiltinDimension.world_normal: lambda image_ref:
+                process_norm_vector_capture(imageio.imread(image_ref[BatchKey.uri])),
+
+            BuiltinDimension.visual_ldr: lambda image_ref: imageio.imread(image_ref[BatchKey.uri]),
+            BuiltinDimension.visual_hdr: lambda image_ref: imageio.imread(image_ref[BatchKey.uri]),
+
+            BuiltinDimension.segmentation: lambda image_ref:
+                process_integer_capture(imageio.imread(image_ref[BatchKey.uri])),
+            BuiltinDimension.segmentation_outline: lambda image_ref:
+                process_integer_capture(imageio.imread(image_ref[BatchKey.uri])),
+
+            BuiltinDimension.keypoint: lambda image_ref:
+                process_integer_capture(imageio.imread(image_ref[BatchKey.uri])),
+
+            BuiltinDimension.uv: lambda image_ref: imageio.imread(image_ref[BatchKey.uri]),
+
+            BuiltinDimension.position: lambda image_ref:
+                process_position_capture(
+                    imageio.imread(image_ref[BatchKey.position_capture][BatchKey.uri]),
+                    image_ref[BatchKey.position_coordinates_origin]
+                ),
+
+            BuiltinDimension.depth: lambda image_ref: process_depth_capture(imageio.imread(image_ref[BatchKey.uri]))
+
+        }
+
+    return _default_image_loaders
+
+
+def build_image_only_loader(cls, dimension):
+    image_loader = get_default_image_loaders()[dimension]
+
+    @data_loader.loader
+    def load(points):
+        observer_map = {}
+        num_images = 0
+
+        for point in points:
+            num_images += 1
+            observation = cls.load_observation(point)
+
+            for observer, observer_value in observation[BatchKey.per_observer_values].items():
+                observer_map.setdefault(observer, [])
+                observer_map[observer].append(image_loader(observer_value[dimension]))
+
+            for image_list in observer_map.values():
+                if len(image_list) < num_images:
+                    image_list.append(())
+
+        for observer, images in observer_map.items():
+            observer_map[observer] = cls.image_maker(images)
+
+        return observer_map if len(observer_map) > 1 else tuple(observer_map.values())[0] if len(observer_map) == 1 \
+            else ()
+
+    load.__set_name__(cls, dimension)
+
+
+def build_only_per_observation_array_loader(cls, dimension, jagged_by_observation=False,
+                                            process=lambda x: x, collection=None):
+
+    @data_loader.loader
+    def load(points):
+        array_maker = collection if collection is not None else cls.array_maker
+        value = []
+        for point in points:
+            observation = cls.load_observation(point)
+            value.append(process(observation[BatchKey.per_observation_values][dimension]))
+
+        return tuple(array_maker(array) for array in value) if jagged_by_observation else array_maker(value)
+
+    load.__set_name__(cls, dimension)
+
+
+def build_per_observation_array_loader(cls, dimension, jagged_by_observation=False, jagged_by_object=False,
+                                       per_observation_process=None, process=lambda x: x, collection=None):
+    @data_loader.loader
+    def load(points):
+        array_maker = collection if collection is not None else cls.array_maker
+        value = []
+        for point in points:
+            observation = cls.load_observation(point)
+            if per_observation_process is not None:
+                per_observation_process(observation[BatchKey.per_observation_values][dimension])
+
+            value.append(tuple(
+                process(object_value[dimension])
+                for object_value in observation[BatchKey.per_observation_values][BatchKey.object_values]
+            ))
+
+        if jagged_by_object:
+            return tuple(tuple(array_maker(obj) for obj in array) for array in value)
+        elif jagged_by_observation:
+            return tuple(array_maker(array) for array in value)
+        else:
+            return array_maker(value)
+
+    load.__set_name__(cls, dimension)
+
+
+def build_only_per_observer_array_loader(cls, dimension, jagged_by_observation=False, per_observation_process=None,
+                                         process=lambda x: x, collection=None):
+
+    @data_loader.loader
+    def load(points):
+        array_maker = collection if collection is not None else cls.array_maker
+        observer_map = {}
+        num_points = 0
+
+        for point in points:
+            num_points += 1
+            observation = cls.load_observation(point)
+            if per_observation_process is not None:
+                per_observation_process(observation[BatchKey.per_observation_values][dimension])
+
+            for observer, observer_value in observation[BatchKey.per_observer_values]:
+                observer_list = observer_map.setdefault(observer, [])
+                observer_list.append(process(observer_value[dimension]))
+
+            for observer_list in observer_map.values():
+                if len(observer_list) < num_points:
+                    observer_list.append(())
+
+        for observer, value in observer_map.items():
+            observer_map[observer] = tuple(array_maker(array) for array in value) if jagged_by_observation \
+                else array_maker(value)
+
+        return observer_map if len(observer_map) > 1 else tuple(observer_map.values())[0] if len(observer_map) == 1 \
+            else ()
+
+    load.__set_name__(cls, dimension)
+
+
+def build_per_observer_array_loader(cls, dimension, jagged_by_observation=False, jagged_by_object=False,
+                                    per_observation_process=None, per_observer_process=None, process=lambda x: x,
+                                    collection=None):
+    @data_loader.loader
+    def load(points):
+        array_maker = collection if collection is not None else cls.array_maker
+        observer_map = {}
+        num_points = 0
+
+        for point in points:
+            num_points += 1
+            observation = cls.load_observation(point)
+            if per_observation_process is not None:
+                per_observation_process(observation[BatchKey.per_observation_values][dimension])
+
+            for observer, observer_value in observation[BatchKey.per_observer_values]:
+                if per_observer_process is not None:
+                    per_observer_process(observer_value[dimension])
+
+                observer_map.setdefault(observer, [])
+                observer_map[observer].append(tuple(
+                    process(object_value[dimension])
+                    for object_value in observer_value[BatchKey.object_values]
+                ))
+
+            for observer_list in observer_map.values():
+                if len(observer_list) < num_points:
+                    observer_list.append(())
+
+        for observer, value in observer_map.items():
+            if jagged_by_object:
+                observer_map[observer] = tuple(tuple(array_maker(obj) for obj in array) for array in value)
+            elif jagged_by_observation:
+                observer_map[observer] = tuple(array_maker(array) for array in value)
+            else:
+                observer_map[observer] = array_maker(value)
+
+        return observer_map if len(observer_map) > 1 else tuple(observer_map.values())[0] if len(observer_map) == 1 \
+            else ()
+
+    load.__set_name__(cls, dimension)
+
+
+def get_object_bounding_box(box_data):
+    return box_data[BatchKey.object_bounding_box] if isinstance(box_data, dict) else box_data
+
+
+def get_actor_bounding_box(box_data):
+    return box_data[BatchKey.actor_bounding_box] if isinstance(box_data, dict) else None
+
+
+def build_local_bb3_loader(cls):
+    @data_loader.loader
+    def load(points):
+        object_boxes = []
+        actor_boxes = []
+        for point in points:
+            observation = cls.load_observation(point)
+
+            object_boxes.append(tuple(
+                get_object_bounding_box(object_value[BuiltinDimension.local_bounding_box_3d])
+                for object_value in observation[BatchKey.per_observation_values][BatchKey.object_values]
+            ))
+
+            for object_value in observation[BatchKey.per_observation_values][BatchKey.object_values]:
+                if isinstance(object_value[BuiltinDimension.local_bounding_box_3d], dict):
+                    actor_boxes.append(tuple(
+                        get_actor_bounding_box(object_value[BuiltinDimension.local_bounding_box_3d])
+                        for object_value in observation[BatchKey.per_observation_values][BatchKey.object_values]
+                    ))
+                    actor_boxes[-1] = tuple(cls.array_maker(box) if box is not None else box for box in actor_boxes[-1])
+                    break
+
+            if 0 < len(actor_boxes) < len(object_boxes):
+                actor_boxes.append(())
+
+        return BoundingBoxPair(actor_boxes, cls.array_maker(object_boxes)) if len(actor_boxes) > 0 \
+            else cls.array_maker(object_boxes)
+
+    load.__set_name__(cls, BuiltinDimension.local_bounding_box_3d)
+
+
+def build_global_bb3_loader(cls):
+    @data_loader.loader
+    def load(points):
+        object_boxes = []
+        actor_boxes = []
+        for point in points:
+            observation = cls.load_observation(point)
+            stored_format = box_format_mapping[
+                observation[BatchKey.per_observation_values][BuiltinDimension.global_bounding_box_3d]
+            ]
+
+            object_boxes.append(tuple(
+                convert_single_3d(get_object_bounding_box(object_value[BuiltinDimension.global_bounding_box_3d]),
+                                  stored_format, cls.bounding_box_3d_format)
+                for object_value in observation[BatchKey.per_observation_values][BatchKey.object_values]
+            ))
+
+            for object_value in observation[BatchKey.per_observation_values][BatchKey.object_values]:
+                if isinstance(object_value[BuiltinDimension.global_bounding_box_3d], dict):
+                    actor_boxes.append(tuple(
+                        get_actor_bounding_box(object_value[BuiltinDimension.global_bounding_box_3d])
+                        for object_value in observation[BatchKey.per_observation_values][BatchKey.object_values]
+                    ))
+                    actor_boxes[-1] = tuple(
+                        cls.array_maker(convert_single_3d(box, stored_format, cls.bounding_box_3d_format))
+                        if box is not None else box
+                        for box in actor_boxes[-1]
+                    )
+                    break
+
+            if 0 < len(actor_boxes) < len(object_boxes):
+                actor_boxes.append(())
+
+        return BoundingBoxPair(actor_boxes, cls.array_maker(object_boxes)) if len(actor_boxes) > 0 \
+            else cls.array_maker(object_boxes)
+
+    load.__set_name__(cls, BuiltinDimension.global_bounding_box_3d)
+
+
+def build_custom_bb3_loader(cls):
+    @data_loader.loader
+    def load(points):
+        object_boxes = []
+        actor_boxes = []
+        for point in points:
+            observation = cls.load_observation(point)
+
+            object_boxes.append(tuple(
+                cls.array_maker(get_object_bounding_box(object_value[BuiltinDimension.local_bounding_box_3d]))
+                for object_value in observation[BatchKey.per_observation_values][BatchKey.object_values]
+            ))
+
+            for object_value in observation[BatchKey.per_observation_values][BatchKey.object_values]:
+                if isinstance(object_value[BuiltinDimension.local_bounding_box_3d], dict):
+                    actor_boxes.append(tuple(
+                        get_actor_bounding_box(object_value[BuiltinDimension.local_bounding_box_3d])
+                        for object_value in observation[BatchKey.per_observation_values][BatchKey.object_values]
+                    ))
+                    actor_boxes[-1] = tuple(cls.array_maker(box) if box is not None else box for box in actor_boxes[-1])
+                    break
+
+            if 0 < len(actor_boxes) < len(object_boxes):
+                actor_boxes.append(())
+
+        return BoundingBoxPair(actor_boxes, object_boxes) if len(actor_boxes) > 0 \
+            else cls.array_maker(object_boxes)
+
+
+class BoundingBox2DLoaderBuilder:
+    def __init__(self, cls, dimension, jagged_by_object):
+        self.target_format = cls.bounding_box_2d_format
+        self.stored_format = None
+        build_per_observer_array_loader(cls, dimension, jagged_by_observation=True, jagged_by_object=jagged_by_object,
+                                        per_observation_process=self.per_observation_process, process=self.process)
+
+    def per_observation_process(self, per_observation_value):
+        self.stored_format = box_format_mapping[per_observation_value]
+
+    def process(self, box):
+        return convert_single_2d(box, self.stored_format, self.target_format)
+
+
+def get_camera_transform_processor(cls):
+    def process_camera_transform(camera_view_value):
+        camera_view_value[BatchKey.camera_transform_matrix] = cls.array_maker(camera_view_value)
+        return camera_view_value
+
+    return process_camera_transform
+
+
+def get_object_transform_processor(cls):
+    def process_object_transform(object_transform):
+        if isinstance(object_transform, dict):
+            object_transform[BatchKey.spline_object_transform] = \
+                cls.array_maker(object_transform[BatchKey.spline_object_transform])
+            return object_transform
+        else:
+            return cls.array_maker(object_transform)
+
+    return process_object_transform
+
+
+_default_loader_builders = {}
+
+
+def get_default_loader_builders():
+    global _default_loader_builders
+    if len(_default_loader_builders) == 0:
+        _default_loader_builders = {
+            BuiltinDimension.world_tangent:
+                lambda cls: build_image_only_loader(cls, BuiltinDimension.world_tangent),
+            BuiltinDimension.world_bitangent:
+                lambda cls: build_image_only_loader(cls, BuiltinDimension.world_bitangent),
+            BuiltinDimension.world_normal:
+                lambda cls: build_image_only_loader(cls, BuiltinDimension.world_normal),
+
+            BuiltinDimension.visual_ldr: lambda cls: build_image_only_loader(cls, BuiltinDimension.visual_ldr),
+            BuiltinDimension.visual_hdr: lambda cls: build_image_only_loader(cls, BuiltinDimension.visual_hdr),
+
+            BuiltinDimension.segmentation:
+                lambda cls: build_image_only_loader(cls, BuiltinDimension.segmentation),
+            BuiltinDimension.segmentation_outline:
+                lambda cls: build_image_only_loader(cls, BuiltinDimension.segmentation_outline),
+
+            # TODO: implement this whenever keypoints are implemented in the Unreal plugin
+            BuiltinDimension.keypoint: None,
+
+            BuiltinDimension.uv: lambda cls: build_image_only_loader(cls, BuiltinDimension.uv),
+
+            BuiltinDimension.position: lambda cls: build_image_only_loader(cls, BuiltinDimension.position),
+
+            BuiltinDimension.depth: lambda cls: build_image_only_loader(cls, BuiltinDimension.depth),
+
+            BuiltinDimension.local_bounding_box_3d: build_local_bb3_loader,
+            BuiltinDimension.global_bounding_box_3d: build_global_bb3_loader,
+            BuiltinDimension.custom_bounding_box_3d: build_custom_bb3_loader,
+
+            BuiltinDimension.total_bounding_box_2d: lambda cls: BoundingBox2DLoaderBuilder(
+                cls, BuiltinDimension.total_bounding_box_2d, False),
+            BuiltinDimension.connected_bounding_box_2d: lambda cls: BoundingBox2DLoaderBuilder(
+                cls, BuiltinDimension.connected_bounding_box_2d, True),
+
+            BuiltinDimension.time: lambda cls: build_only_per_observation_array_loader(cls, BuiltinDimension.time),
+            BuiltinDimension.object_transform: lambda cls: build_per_observation_array_loader(
+                cls, BuiltinDimension.object_transform, collection=tuple, process=get_object_transform_processor(cls)),
+            BuiltinDimension.mesh_name: lambda cls: build_per_observation_array_loader(
+                cls, BuiltinDimension.mesh_name, collection=tuple),
+            BuiltinDimension.unreal_name: lambda cls: build_per_observation_array_loader(
+                cls, BuiltinDimension.unreal_name, collection=tuple),
+            BuiltinDimension.camera_view: lambda cls: build_only_per_observer_array_loader(
+                cls, BuiltinDimension.camera_view, collection=tuple, process=get_camera_transform_processor(cls)),
+
+        }
+
+    return _default_loader_builders
+
+
+mebibytes = 2 ** 20
 
 
 # noinspection PyPep8Naming
-def SimerseDataLoader(meta, logger=logtools.default_logger, cache_limit=256 * Mebibytes):
+def SimerseDataLoader(meta, custom_array_maker=default_array_maker, custom_image_maker=default_image_maker,
+                      logger=logtools.default_logger, cache_limit=256 * mebibytes,
+                      bounding_box_2d_load_format=BoxFormat.min_max, bounding_box_3d_load_format=BoxFormat.min_max,
+                      **custom_loaders):
 
     meta_dict, root = load_meta(meta, logger)
 
-    '''
-    Declare class for the dataset
-    '''
     # noinspection PyMethodParameters
     class SimerseDataLoaderInstance(data_loader.DataLoader):
+        array_maker = custom_array_maker
+        image_maker = custom_image_maker
+
+        bounding_box_2d_format = bounding_box_2d_load_format
+        bounding_box_3d_format = bounding_box_3d_load_format
 
         batch_cache_limit = cache_limit
 
         name = meta_dict[MetaKey.dataset_name]
-
         description = meta_dict[MetaKey.description]
-
         dimensions = meta_dict[MetaKey.summary][MetaKey.dimensions] + [BuiltinDimension.object_uid]
 
         num_observations = meta_dict[MetaKey.summary][MetaKey.observation_count]
-
         batch_size = meta_dict[MetaKey.summary][MetaKey.batch_size]
 
         license = meta_dict[MetaKey.license]
@@ -200,240 +625,46 @@ License:
                 uid // SimerseDataLoaderInstance.batch_size
             )[BatchKey.observations][uid % SimerseDataLoaderInstance.batch_size]
 
+        @staticmethod
+        def load_capture_data(point, observer_name, capture_name):
+            logger(f'Loading Capture {capture_name} made by Observer {observer_name} for Observation {point}')
+            observation = SimerseDataLoaderInstance.load_observation(point)
+            return observation[BatchKey.per_observer_values][observer_name][capture_name]
+
     # attach the appropriate batch loader for the dataset
+    logger('Attaching load_batch function')
     attach_load_batch_function(meta_dict, SimerseDataLoaderInstance, root, logger)
 
-    '''
-    Attach load_object_uid function to the     
-    '''
-    # noinspection PyUnusedLocal
-    @data_loader.loader
-    def load_object_uid(self, points):
-        uids = []
-        for point in points:
-            observation = SimerseDataLoaderInstance.load_observation(point)
-            uids.append(array_maker([obj[observation_object_uid_key] for obj in observation[objects_key]]))
-        return uids
+    # attach the data loader for object uid dimension
+    logger('Attaching data loader for dimension object_uid')
+    attach_load_object_uid_function(SimerseDataLoaderInstance)
 
-    load_object_uid.__set_name__(SimerseDataLoaderInstance, observation_object_uid_key)
-
-    import imageio
-
-    def load_capture_name(point, capture_name):
-        log(f'Loading capture {capture_name} for observation {point}', 2)
-        observation = SimerseDataLoaderInstance.load_observation(point)
-        return observation[capture_data_key][capture_name]
-
-    SimerseDataLoaderInstance.load_capture_name = staticmethod(load_capture_name)
-
+    # get the dimension names as a set because we will be checking for containment/removing elements
     dimensions_set = set(SimerseDataLoaderInstance.dimensions)
 
-    for default_capture_dimension in default_capture_dimensions:
-        if default_capture_dimension not in dimensions_set:
-            continue
+    # attach any custom data loaders
+    logger('Attaching custom data loaders')
+    for dimension_name, custom_loader in custom_loaders.items():
+        if dimension_name in dimensions_set:
+            logger(f'Attaching custom loader for dimension {BuiltinDimension.get_standard_name(dimension_name)}')
+            dimensions_set.remove(dimension_name)
+            loader = data_loader.loader(custom_loaders)
+            loader.__set_name__(SimerseDataLoaderInstance, dimension_name)
+        else:
+            logger(f'Could not attach custom loader for dimension {BuiltinDimension.get_standard_name(dimension_name)}'
+                   f' because the dataset does not have that dimension', LoaderIgnoredWarning)
 
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def loader(self, points, capture_dim=default_capture_dimension):
-            return image_maker([
-                imageio.imread(f'{root}/{load_capture_name(point, capture_dim)}') for point in points
-            ])
+    # try to attach default loaders for the remaining dimensions that don't have any
+    default_loader_builders = get_default_loader_builders()
 
-        loader.__set_name__(SimerseDataLoaderInstance, default_capture_dimension)
-
-    if depth_capture_key in dimensions_set:
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def load_depth(self, points):
-            return image_maker(
-                [
-                    process_depth_capture(imageio.imread(f'{root}/{load_capture_name(point, depth_capture_key)}'))
-                    for point in points
-                ]
-            )
-
-        load_depth.__set_name__(SimerseDataLoaderInstance, depth_capture_key)
-
-    for vector_capture_dimension in vector_capture_dimensions:
-        if vector_capture_dimension not in dimensions_set:
-            continue
-
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def loader(self, points, vector_capture_dim=vector_capture_dimension):
-            return image_maker(
-                [
-                    imageio.imread(f'{root}/{load_capture_name(point, vector_capture_dim)}')[:, :, :3] * 2 - 1
-                    for point in points
-                ]
-            )
-
-        loader.__set_name__(SimerseDataLoaderInstance, vector_capture_dimension)
-
-    if uv_capture_key in dimensions_set:
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def uv(self, points):
-            return image_maker(
-                [
-                    imageio.imread(f'{root}/{load_capture_name(point, uv_capture_key)}')[:, :, :3]
-                    for point in points
-                ]
-            )
-
-        uv.__set_name__(SimerseDataLoaderInstance, uv_capture_key)
-
-    if world_position_capture_key in dimensions_set:
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def world_position_loader(self, points):
-            ret_value = []
-            for point in points:
-                observation = SimerseDataLoaderInstance.load_observation(point)
-                im_path = f"{root}/{observation[capture_data_key][world_position_capture_key]}"
-                origin = observation[capture_data_key][world_position_origin_key]
-                log(f'Loading capture WorldPosition_Capture for observation {point}')
-                ret_value.append(process_world_position_capture(imageio.imread(im_path), origin))
-            return image_maker(ret_value)
-
-        world_position_loader.__set_name__(SimerseDataLoaderInstance, world_position_capture_key)
-
-    for integer_capture_dimension in integer_capture_dimensions:
-        if integer_capture_dimension not in dimensions_set:
-            continue
-
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def loader(self, points, integer_capture_dim=integer_capture_dimension):
-            ret_value = []
-            for point in points:
-                observation = SimerseDataLoaderInstance.load_observation(point)
-                im_path = f"{root}/{observation[capture_data_key][integer_capture_dim]}"
-                log(f'Loading capture {integer_capture_dim} for observation {point}', 2)
-                ret_value.append(process_integer_capture(imageio.imread(im_path)))
-            return array_provider.stack(ret_value, 0)
-
-        loader.__set_name__(SimerseDataLoaderInstance, integer_capture_dimension)
-
-    if segmentation_polygon_key in dimensions_set:
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def loader(self, points):
-            ret_value = []
-            for point in points:
-                objects = SimerseDataLoaderInstance.load_observation(point)[objects_key]
-                ret_value.append(
-                    [[array_maker(polygon) for polygon in obj[segmentation_polygon_key]] for obj in objects]
-                )
-            return ret_value
-
-        loader.__set_name__(SimerseDataLoaderInstance, segmentation_polygon_key)
-
-    if segmentation_rle_key in dimensions_set:
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def loader(self, points):
-            return [
-                [
-                    array_maker(obj[segmentation_rle_key])
-                    for obj in SimerseDataLoaderInstance.load_observation(point)[objects_key]
-                ]
-                for point in points
-            ]
-
-        loader.__set_name__(SimerseDataLoaderInstance, segmentation_rle_key)
-
-    def safe_array(value):
-        return array_maker(value) if value != SimerseDataLoaderInstance.na_value else value
-
-    for bounding_box_dimension in bounding_box_dimensions:
-        if bounding_box_dimension not in dimensions_set:
-            continue
-
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def loader(self, points, bounding_box_dim=bounding_box_dimension):
-            return [
-                [
-                    safe_array(obj[bounding_box_dim])
-                    for obj in SimerseDataLoaderInstance.load_observation(point)[objects_key]
-                ]
-                for point in points
-            ]
-
-        loader.__set_name__(SimerseDataLoaderInstance, bounding_box_dimension)
-
-    if keypoints_key in dimensions_set:
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def loader(self, points):
-            return [
-                [obj[keypoints_key] for obj in SimerseDataLoaderInstance.load_observation(point)[objects_key]]
-                for point in points
-            ]
-
-        loader.__set_name__(SimerseDataLoaderInstance, keypoints_key)
-
-    if projection_type_key in dimensions_set:
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def camera_view_type(self, points):
-            return [
-                SimerseDataLoaderInstance.load_observation(point)[capture_data_key][projection_type_key]
-                for point in points
-            ]
-
-        camera_view_type.__set_name__(SimerseDataLoaderInstance, projection_type_key)
-
-    if view_parameter_key in dimensions_set:
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def camera_view_parameter(self, points):
-            return [
-                SimerseDataLoaderInstance.load_observation(point)[capture_data_key][view_parameter_key]
-                for point in points
-            ]
-
-        camera_view_parameter.__set_name__(SimerseDataLoaderInstance, view_parameter_key)
-
-    if camera_transform_key in dimensions_set:
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def camera_transform(self, points):
-            return array_maker([
-                SimerseDataLoaderInstance.load_observation(point)[capture_data_key][camera_transform_key]
-                for point in points
-            ])
-
-        camera_transform.__set_name__(SimerseDataLoaderInstance, camera_transform_key)
-
-    if object_transform_key in dimensions_set:
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def object_transformation(self, points):
-            ret_value = []
-            for point in points:
-                ret_value.append(array_maker([
-                    obj[object_transform_key] for obj in SimerseDataLoaderInstance.load_observation(point)[objects_key]
-                ]))
-            return ret_value
-
-        object_transformation.__set_name__(SimerseDataLoaderInstance, object_transform_key)
-
-    if time_key in dimensions_set:
-        # noinspection PyUnusedLocal
-        @data_loader.loader
-        def time(self, points):
-            return array_maker([SimerseDataLoaderInstance.load_observation(point)[capture_data_key][time_key]
-                                for point in points])
-
-        time.__set_name__(SimerseDataLoaderInstance, time_key)
-
-    for name, loader in custom_loaders.items():
-        if name not in dimensions_set:
-            continue
-        loader = data_loader.loader(loader)
-        loader.__set_name__(SimerseDataLoaderInstance, name)
+    for dimension_name in dimensions_set:
+        if dimension_name in default_loader_builders:
+            logger(f'Building default loader for dimension {dimension_name}')
+            default_loader_builders[dimension_name](SimerseDataLoaderInstance)
+        else:
+            logger(f'Dimension {BuiltinDimension.get_standard_name(dimension_name)} was not given a custom loader '
+                   f'and there is no default loader for it. You will not be able to load this dimension unless you'
+                   f' attach a loader with the DataLoader.attach_loader function', LoaderNotFoundWarning)
 
     return SimerseDataLoaderInstance()
 
