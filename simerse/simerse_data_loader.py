@@ -21,8 +21,6 @@ from simerse.simerse_keys import BuiltinDimension, MetaKey, BatchKey
 
 # ==== Configuration stuff ====
 
-na_value = 'N/A'
-
 supported_output_file_formats = [
     'JSON',
     'XML',
@@ -43,7 +41,6 @@ def get_batch_file_path(root, batch_uid):
 ImageResolution = namedtuple('ImageResolution', ('width', 'height'))
 ImageCoordinatesPoint = namedtuple('ImageCoordinatesPoint', ('x', 'y'))
 SimerseLoaderCache = namedtuple('SimerseLoaderCache', ('batches', 'batch_sizes', 'batch_queue', 'total_cache_size'))
-ObservationValue = namedtuple('ObservationValue', ('value', 'object_values'))
 BoundingBoxPair = namedtuple('BoundingBoxPair', ('actor', 'object'))
 
 box_format_mapping = {
@@ -131,13 +128,13 @@ def load_meta(meta, logger):
         return meta, os.path.dirname(meta_file)
 
 
-def attach_load_batch_function(meta_dict, clazz, root, logger):
+def attach_load_batch_function(meta_dict, clazz, root, logger, na_value):
     if meta_dict[MetaKey.batch_file_format] == 'JSON':
-        attach_batch_file_loader_json(clazz, root, logger)
+        attach_batch_file_loader_json(clazz, root, logger, na_value)
     elif meta_dict[MetaKey.batch_file_format] == 'XML':
-        attach_batch_file_loader_xml(clazz, root, logger)
+        attach_batch_file_loader_xml(clazz, root, logger, na_value)
     elif meta_dict[MetaKey.batch_file_format] == 'CSV':
-        attach_batch_file_loader_csv(clazz, root, logger)
+        attach_batch_file_loader_csv(clazz, root, logger, na_value)
     else:
         logger.log('', ValueError(
             f'meta_dict contains an invalid batch file format: {meta_dict["Batch File Format"]}; batch'
@@ -149,18 +146,19 @@ def attach_load_object_uid_function(cls):
 
     @data_loader.loader
     def load_object_uid(self, points):
-        uid_map = {None: []}
+        observer_map = ObserverMap()
+        observer_map[None] = []
         processed_points = 0
         for point in points:
             observation = self.load_observation(point)
 
-            uid_map[None].append(self.array_maker(tuple(
+            observer_map[None].append(self.array_maker(tuple(
                 object_value[BatchKey.object_uid] for object_value in
                 observation[BatchKey.per_observation_values][BatchKey.object_values]
             )))
 
             for observer, value in observation[BatchKey.per_observer_values].items():
-                observer_uids = uid_map.setdefault(observer, [])
+                observer_uids = observer_map.setdefault(observer, [])
                 observer_uids.append(self.array_maker(tuple(
                     object_value[BatchKey.object_uid] for object_value in
                     value[BatchKey.object_values]
@@ -168,11 +166,12 @@ def attach_load_object_uid_function(cls):
 
             processed_points += 1
 
-            for uid_list in uid_map.values():
+            for uid_list in observer_map.values():
                 if len(uid_list) != processed_points:
                     uid_list.append(self.array_maker(tuple()))
 
-        return uid_map
+        return observer_map if len(observer_map) > 1 else tuple(observer_map.values())[0] if len(observer_map) == 1 \
+            else ()
 
     load_object_uid.__set_name__(cls, BuiltinDimension.object_uid)
 
@@ -190,44 +189,55 @@ def get_default_image_loaders():
     if len(_default_image_loaders) == 0:
         import imageio
         _default_image_loaders = {
-            BuiltinDimension.world_tangent: lambda image_ref:
-                process_norm_vector_capture(imageio.imread(image_ref[BatchKey.uri])),
-            BuiltinDimension.world_bitangent: lambda image_ref:
-                process_norm_vector_capture(imageio.imread(image_ref[BatchKey.uri])),
-            BuiltinDimension.world_normal: lambda image_ref:
-                process_norm_vector_capture(imageio.imread(image_ref[BatchKey.uri])),
+            BuiltinDimension.world_tangent: lambda root, image_ref:
+                process_norm_vector_capture(imageio.imread(os.path.join(root, image_ref[BatchKey.uri]))),
+            BuiltinDimension.world_bitangent: lambda root, image_ref:
+                process_norm_vector_capture(imageio.imread(os.path.join(root, image_ref[BatchKey.uri]))),
+            BuiltinDimension.world_normal: lambda root, image_ref:
+                process_norm_vector_capture(imageio.imread(os.path.join(root, image_ref[BatchKey.uri]))),
 
-            BuiltinDimension.visual_ldr: lambda image_ref: imageio.imread(image_ref[BatchKey.uri]),
-            BuiltinDimension.visual_hdr: lambda image_ref: imageio.imread(image_ref[BatchKey.uri]),
+            BuiltinDimension.visual_ldr: lambda root, image_ref:
+                imageio.imread(os.path.join(root, image_ref[BatchKey.uri])),
+            BuiltinDimension.visual_hdr: lambda root, image_ref:
+                imageio.imread(os.path.join(root, image_ref[BatchKey.uri])),
 
-            BuiltinDimension.segmentation: lambda image_ref:
-                process_integer_capture(imageio.imread(image_ref[BatchKey.uri])),
-            BuiltinDimension.segmentation_outline: lambda image_ref:
-                process_integer_capture(imageio.imread(image_ref[BatchKey.uri])),
+            BuiltinDimension.segmentation: lambda root, image_ref:
+                process_integer_capture(imageio.imread(os.path.join(root, image_ref[BatchKey.uri]))),
+            BuiltinDimension.segmentation_outline: lambda root, image_ref:
+                process_integer_capture(imageio.imread(os.path.join(root, image_ref[BatchKey.uri]))),
 
-            BuiltinDimension.keypoint: lambda image_ref:
-                process_integer_capture(imageio.imread(image_ref[BatchKey.uri])),
+            BuiltinDimension.keypoint: lambda root, image_ref:
+                process_integer_capture(imageio.imread(os.path.join(root, image_ref[BatchKey.uri]))),
 
-            BuiltinDimension.uv: lambda image_ref: imageio.imread(image_ref[BatchKey.uri]),
+            BuiltinDimension.uv: lambda root, image_ref: imageio.imread(os.path.join(root, image_ref[BatchKey.uri])),
 
-            BuiltinDimension.position: lambda image_ref:
+            BuiltinDimension.position: lambda root, image_ref:
                 process_position_capture(
-                    imageio.imread(image_ref[BatchKey.position_capture][BatchKey.uri]),
+                    imageio.imread(os.path.join(root, image_ref[BatchKey.position_capture][BatchKey.uri])),
                     image_ref[BatchKey.position_coordinates_origin]
                 ),
 
-            BuiltinDimension.depth: lambda image_ref: process_depth_capture(imageio.imread(image_ref[BatchKey.uri]))
+            BuiltinDimension.depth: lambda root, image_ref:
+                process_depth_capture(imageio.imread(os.path.join(root, image_ref[BatchKey.uri])))
 
         }
 
     return _default_image_loaders
 
 
+class ObserverMap(dict):
+    def __getitem__(self, item):
+        if isinstance(item, int):
+            return {k: v[item] for k, v in self.items()}
+        else:
+            return dict.__getitem__(self, item)
+
+
 def build_image_only_loader(dimension):
     image_loader = get_default_image_loaders()[dimension]
 
     def load(self, points):
-        observer_map = {}
+        observer_map = ObserverMap()
         num_images = 0
 
         for point in points:
@@ -238,7 +248,7 @@ def build_image_only_loader(dimension):
                 observer_map.setdefault(observer, [])
                 self._logger(f'Loading Dimension {BuiltinDimension.get_standard_name(dimension)} Capture ID {point}'
                              f' observed by {observer}', LogVerbosity.EVERYTHING)
-                observer_map[observer].append(image_loader(observer_value[dimension]))
+                observer_map[observer].append(image_loader(self.folder, observer_value[dimension]))
 
             for image_list in observer_map.values():
                 if len(image_list) < num_images:
@@ -298,7 +308,7 @@ def build_only_per_observer_array_loader(dimension, jagged_by_observation=False,
 
     def load(self, points):
         array_maker = collection if collection is not None else self.array_maker
-        observer_map = {}
+        observer_map = ObserverMap()
         num_points = 0
 
         for point in points:
@@ -331,7 +341,7 @@ def build_per_observer_array_loader(dimension, jagged_by_observation=False, jagg
 
     def load(self, points):
         array_maker = collection if collection is not None else self.array_maker
-        observer_map = {}
+        observer_map = ObserverMap()
         num_points = 0
 
         for point in points:
@@ -479,9 +489,9 @@ def build_custom_bb3_loader():
 
 
 class BoundingBox2DLoaderBuilder:
-    def __init__(self, cls, dimension, jagged_by_object):
-        self.target_format = cls.bounding_box_2d_format
+    def __init__(self, dimension, jagged_by_object):
         self.stored_format = None
+        self.target_format = None
         self.dimension = dimension
         self.jagged_by_object = jagged_by_object
 
@@ -489,9 +499,10 @@ class BoundingBox2DLoaderBuilder:
         self.stored_format = box_format_mapping[per_observation_value]
 
     def process(self, box):
-        return convert_single_2d(box, self.stored_format, self.target_format)
+        return convert_single_2d(box, self.stored_format, self.cls.bounding_box_2d_format)
 
-    def __call__(self):
+    def __call__(self, cls):
+        self.cls = cls
         return build_per_observer_array_loader(
             self.dimension, jagged_by_observation=True, jagged_by_object=self.jagged_by_object,
             per_observation_process=self.per_observation_process, process=self.process
@@ -554,10 +565,10 @@ def get_default_loader_builders():
             BuiltinDimension.global_bounding_box_3d: lambda cls: build_global_bb3_loader(),
             BuiltinDimension.custom_bounding_box_3d: lambda cls: build_custom_bb3_loader(),
 
-            BuiltinDimension.total_bounding_box_2d: lambda cls: BoundingBox2DLoaderBuilder(
-                cls, BuiltinDimension.total_bounding_box_2d, False),
+            BuiltinDimension.total_bounding_box_2d: BoundingBox2DLoaderBuilder(
+                BuiltinDimension.total_bounding_box_2d, False),
             BuiltinDimension.connected_bounding_box_2d: lambda cls: BoundingBox2DLoaderBuilder(
-                cls, BuiltinDimension.connected_bounding_box_2d, True),
+                BuiltinDimension.connected_bounding_box_2d, True),
 
             BuiltinDimension.time: lambda cls: build_only_per_observation_array_loader(cls, BuiltinDimension.time),
             BuiltinDimension.object_transform: lambda cls: build_per_observation_array_loader(
@@ -579,7 +590,7 @@ mebibytes = 2 ** 20
 
 # noinspection PyPep8Naming
 def SimerseDataLoader(meta, custom_array_maker=default_array_maker, custom_image_maker=default_image_maker,
-                      logger=logtools.default_logger, cache_limit=256 * mebibytes,
+                      logger=logtools.default_logger, cache_limit=256 * mebibytes, na_value='N/A',
                       bounding_box_2d_load_format=BoxFormat.min_max, bounding_box_3d_load_format=BoxFormat.min_max,
                       **custom_loaders):
 
@@ -590,8 +601,15 @@ def SimerseDataLoader(meta, custom_array_maker=default_array_maker, custom_image
     class SimerseDataLoaderInstance(data_loader.DataLoader):
         _logger = logger
 
-        array_maker = custom_array_maker
-        image_maker = custom_image_maker
+        folder = root
+
+        @staticmethod
+        def array_maker(data):
+            return custom_array_maker(data)
+
+        @staticmethod
+        def image_maker(data):
+            return custom_image_maker(data)
 
         bounding_box_2d_format = bounding_box_2d_load_format
         bounding_box_3d_format = bounding_box_3d_load_format
@@ -636,9 +654,13 @@ License:
                 uid // SimerseDataLoaderInstance.batch_size
             )[BatchKey.observations][uid % SimerseDataLoaderInstance.batch_size]
 
+        @staticmethod
+        def is_na(value):
+            return isinstance(value, type(na_value)) and value == na_value
+
     # attach the appropriate batch loader for the dataset
     logger.log('Attaching load_batch function')
-    attach_load_batch_function(meta_dict, SimerseDataLoaderInstance, root, logger)
+    attach_load_batch_function(meta_dict, SimerseDataLoaderInstance, root, logger, na_value)
 
     # attach the data loader for object uid dimension
     logger.log('Attaching data loader for dimension object_uid')
@@ -712,7 +734,7 @@ def safe_add_batch(batch_number, cache, data, cache_limit, logger):
     logger.log('Finished analyzing loaded batch size')
 
 
-def attach_batch_file_loader_json(cls, root, logger):
+def attach_batch_file_loader_json(cls, root, logger, __):
     import json
 
     cache = cls.cache
@@ -741,7 +763,7 @@ def attach_batch_file_loader_json(cls, root, logger):
     cls.load_batch = load_batch
 
 
-def parse_xml_dimension_value_recursive(node):
+def parse_xml_dimension_value_recursive(node, na_value):
     if len(node.text) != 0:
         try:
             return int(node.text)
@@ -752,31 +774,31 @@ def parse_xml_dimension_value_recursive(node):
                 return node.text
     else:
         if node.find(BatchKey.xml_array_element) is not None:
-            return [parse_xml_dimension_value_recursive(array_element) for array_element in node]
+            return [parse_xml_dimension_value_recursive(array_element, na_value) for array_element in node]
         elif node.find(BatchKey.xml_map_pair) is not None:
             return {
-                parse_xml_dimension_value_recursive(map_pair.find(BatchKey.xml_map_key)):
-                    parse_xml_dimension_value_recursive(map_pair.find(BatchKey.xml_map_value))
+                parse_xml_dimension_value_recursive(map_pair.find(BatchKey.xml_map_key), na_value):
+                    parse_xml_dimension_value_recursive(map_pair.find(BatchKey.xml_map_value), na_value)
                 for map_pair in node
             }
         else:
             return na_value
 
 
-def parse_xml_observation_value(node):
+def parse_xml_observation_value(node, na_value):
     final_value = {}
     for value in node.iterfind(BatchKey.xml_dimension_value):
-        final_value[value.attrib[BatchKey.xml_dimension_name]] = parse_xml_dimension_value_recursive(value)
+        final_value[value.attrib[BatchKey.xml_dimension_name]] = parse_xml_dimension_value_recursive(value, na_value)
 
     final_value[BatchKey.object_values] = [
-        parse_xml_dimension_value_recursive(object_value) for object_value in
+        parse_xml_dimension_value_recursive(object_value, na_value) for object_value in
         node.find(BatchKey.object_values)
     ]
 
     return final_value
 
 
-def attach_batch_file_loader_xml(cls, root, logger):
+def attach_batch_file_loader_xml(cls, root, logger, na_value):
     import xml.etree.ElementTree as ElementTree
 
     cache = cls.cache
@@ -795,14 +817,14 @@ def attach_batch_file_loader_xml(cls, root, logger):
                     current_observation = {
                         BatchKey.observation_uid: int(observation.find(BatchKey.observation_uid).text),
                         BatchKey.per_observation_values:
-                            parse_xml_observation_value(observation.find(BatchKey.per_observation_values)),
+                            parse_xml_observation_value(observation.find(BatchKey.per_observation_values), na_value),
                         BatchKey.per_observer_values: per_observer_values
                     }
                     batch.append(current_observation)
 
                     for observer_value in observation.find(BatchKey.per_observer_values):
                         per_observer_values[observer_value.attrib[BatchKey.xml_observer_name]] = \
-                            parse_xml_observation_value(observer_value)
+                            parse_xml_observation_value(observer_value, na_value)
 
                 data = {BatchKey.batch_uid: batch_number, BatchKey.observations: batch}
 
@@ -823,7 +845,7 @@ def attach_batch_file_loader_xml(cls, root, logger):
     cls.load_batch = load_batch
 
 
-def attach_batch_file_loader_csv(cls, root, logger):
+def attach_batch_file_loader_csv(cls, root, logger, na_value):
     import csv
     import json
 

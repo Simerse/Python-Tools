@@ -13,6 +13,13 @@ from simerse.simerse_keys import BuiltinDimension, Visualize
 from simerse.box_format import get_polygon_maker, get_box_huller
 
 
+def indices_in(big_array, sub_array):
+    big_array, big_array = np.array(big_array), np.array(sub_array)
+    big_sort = big_array.argsort()
+    sub_sort = big_array.argsort()
+    return big_sort[np.searchsorted(big_array[big_sort], sub_array[sub_sort])][sub_sort.argsort()]
+
+
 def ecdf(x):
     x = np.sort(x)
     n = len(x)
@@ -23,13 +30,26 @@ def ecdf(x):
     return _ecdf
 
 
+def get_observer_im(im, observation_uid, observer, dimension):
+    if isinstance(im, dict):
+        try:
+            im = im[observer]
+        except KeyError:
+            raise ValueError(f'Observer {observer} did not observe {BuiltinDimension.get_standard_name(dimension)}'
+                             f'for Observation UID {observation_uid}. Please use a different Observer!')
+
+    return im
+
+
 class VisualLDRVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
 
-    def visualize(self, observation_uid, save_on_finish=None):
+    def visualize(self, observation_uid, observer=None, save_on_finish=None):
         if BuiltinDimension.visual_ldr in self.data_loader.dimensions:
             im = image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_ldr))
+            im = get_observer_im(im, observation_uid, observer, BuiltinDimension.visual_ldr)
+
             plt.imshow(im)
             plt.show()
             if save_on_finish:
@@ -43,9 +63,11 @@ class VisualHDRVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
 
-    def visualize(self, observation_uid, mapping=None, save_on_finish=None):
+    def visualize(self, observation_uid, observer=None, mapping=None, save_on_finish=None):
         if BuiltinDimension.visual_hdr in self.data_loader.dimensions:
-            im = image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_hdr))
+            im = self.data_loader.load(observation_uid, BuiltinDimension.visual_hdr)
+            im = get_observer_im(im, observation_uid, observer, BuiltinDimension.visual_hdr)
+            im = image_util.to_numpy(im)
             if mapping is not None:
                 im = mapping(im)
             plt.imshow(im)
@@ -57,22 +79,8 @@ class VisualHDRVisualizer:
                              f'Dimensions are {self.data_loader.dimensions}')
 
 
-def make_object_uid_filter(object_name_filter, object_uid_filter, uid_to_name):
-    if object_name_filter is None and object_uid_filter is None:
-        def object_filter(__):
-            return True
-    elif object_name_filter is None:
-        def object_filter(x):
-            return object_uid_filter(x)
-    elif object_uid_filter is None:
-        def object_filter(x):
-            return object_name_filter(uid_to_name[int(x)])
-    else:
-        def object_filter(x):
-            object_uid_filter(x) and object_name_filter(uid_to_name[int(x)])
-
-    return object_filter
-
+'''
+comment out for now because I haven't even made the loaders load RLE/polygons
 
 class SegmentationVisualizer:
     def __init__(self, data_loader):
@@ -188,12 +196,35 @@ class SegmentationVisualizer:
         else:
             raise ValueError(f'Given segmentation visualization mode {mode} is not supported;'
                              f' choose one of \'overlay\' or \'raw\'.')
+'''
+
+
+def load_and_filter(data_loader, observation_uid, dimensions, observer, object_filter):
+    dimensions = (BuiltinDimension.object_uid,) + tuple(dimensions)
+    uids_values = data_loader.load(observation_uid, dimensions)
+
+    uids_values_by_observer = []
+    for i, dimension in enumerate(dimensions):
+        try:
+            uids_values.append(uids_values[i][observer])
+        except KeyError:
+            raise ValueError(f'Observer {observer} did not make an observation of dimension {dimension} for'
+                             f' observation UID {observation_uid}')
+        except AttributeError:
+            uids_values.append(uids_values[i])
+
+    fused_and_filtered = filter(
+        lambda dim_values: not any(map(data_loader.is_na, dim_values)) and object_filter(*dim_values),
+        zip(*uids_values_by_observer)
+    )
+
+    return tuple(zip(*fused_and_filtered))
 
 
 class BoundingBox2DVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
-        self.polygon_maker = get_polygon_maker(self.data_loader.box_format2d)
+        self.polygon_maker = get_polygon_maker(self.data_loader.bounding_box_2d_format)
 
     @staticmethod
     def get_text_locations(polygons, text_size, line_thickness):
@@ -233,8 +264,8 @@ class BoundingBox2DVisualizer:
             type(self.data_loader).cache['visualize_cached_color_mapping'][0] = (0, 0, 0)
         return type(self.data_loader).cache['visualize_cached_color_mapping']
 
-    def visualize(self, observation_uid,
-                  object_name_filter=None, object_uid_filter=None,
+    def visualize(self, observation_uid, observer=None,
+                  object_filter=None,
                   kind='total', mapping=None,
                   line_thickness=1, joint=None,
                   show_names=True, name_font_size=12,
@@ -245,8 +276,7 @@ class BoundingBox2DVisualizer:
                             f' the dataset does not have a Visual LDR or Visual HDR dimension. Dimensions are '
                             f'{self.data_loader.dimensions}')
 
-        object_filter = make_object_uid_filter(object_name_filter, object_uid_filter,
-                                               self.data_loader.object_uid_name_mapping.uid_to_name)
+        object_filter = object_filter if object_filter is not None else lambda *__: True
 
         font = None
         if show_names:
@@ -255,20 +285,36 @@ class BoundingBox2DVisualizer:
             font = ImageFont.truetype('arial.ttf', size=name_font_size)
 
         if BuiltinDimension.visual_ldr in self.data_loader.dimensions and mapping is None:
-            im = image_util.to_int(
-                image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_ldr))[:, :, :3]
-            )
+            im = self.data_loader.load(observation_uid, BuiltinDimension.visual_ldr)
+            im = get_observer_im(im, observation_uid, observer, BuiltinDimension.visual_ldr)
+            im = image_util.to_int(image_util.to_numpy(im)[:, :, :3])
         else:
             if mapping is None:
                 mapping = Reinhard()
-            im = image_util.to_int(mapping(
-                image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.visual_hdr))[:, :, :3]
-            ))
+            im = self.data_loader.load(observation_uid, BuiltinDimension.visual_hdr)
+            im = get_observer_im(im, observation_uid, observer, BuiltinDimension.visual_hdr)
+            im = image_util.to_int(mapping(image_util.to_numpy(im)[:, :, :3]))
 
         if kind == 'total':
-            if BuiltinDimension.bounding_box_2d_total in self.data_loader.dimensions:
+            if BuiltinDimension.total_bounding_box_2d in self.data_loader.dimensions:
+                all_uids, boxes = self.data_loader.load(
+                    observation_uid, (
+                        BuiltinDimension.object_uid, BuiltinDimension.total_bounding_box_2d
+                    )
+                )
+
+                try:
+                    fused = zip(all_uids[observer], boxes[observer])
+                    filtered = filter(lambda uid_box: uid_box[1] != self.data_loader.na_value and
+                                      object_filter(observation_uid, *uid_box), fused)
+                    uids, boxes =
+                except KeyError:
+                    raise ValueError(f'Observer {observer} was not used to observe'
+                                     f' {BuiltinDimension.get_standard_name(BuiltinDimension.total_bounding_box_2d)}'
+                                     f' for the Observation UID {observation_uid}')
+
                 boxes_uids = zip(*self.data_loader.load(observation_uid, (
-                    BuiltinDimension.bounding_box_2d_total, BuiltinDimension.object_uid
+                    BuiltinDimension.total_bounding_box_2d, BuiltinDimension.object_uid
                 )))
                 boxes, uids = tuple(zip(*filter(lambda x: x[0] != self.data_loader.na_value and object_filter(x[1]),
                                                 boxes_uids)))
@@ -287,7 +333,7 @@ class BoundingBox2DVisualizer:
                         im, None, None, polygons, colors, font=None, line_thickness=line_thickness, joint=joint,
                         show_text=False
                     )
-            elif BuiltinDimension.bounding_box_2d_contiguous in self.data_loader.dimensions:
+            elif BuiltinDimension.connected_bounding_box_2d in self.data_loader.dimensions:
                 boxes_uids = zip(*self.data_loader.load(observation_uid, (
                     BuiltinDimension.bounding_box_2d_contiguous, BuiltinDimension.object_uid
                 )))
