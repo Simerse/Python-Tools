@@ -79,6 +79,39 @@ class VisualHDRVisualizer:
                              f'Dimensions are {self.data_loader.dimensions}')
 
 
+def load_and_filter(data_loader, observation_uid, dimensions, observer, object_filter):
+    dimensions = (BuiltinDimension.object_uid,) + tuple(dimensions)
+    uids_values = data_loader.load(observation_uid, dimensions)
+
+    uids_values_by_observer = []
+    for i, dimension in enumerate(dimensions):
+        try:
+            uids_values.append(uids_values[i][observer])
+        except KeyError:
+            raise ValueError(f'Observer {observer} did not make an observation of dimension {dimension} for'
+                             f' observation UID {observation_uid}')
+        except AttributeError:
+            uids_values.append(uids_values[i])
+
+    fused_and_filtered = filter(
+        lambda dim_values: not any(map(data_loader.is_na, dim_values)) and object_filter(*dim_values),
+        zip(*uids_values_by_observer)
+    )
+
+    return tuple(zip(*fused_and_filtered))
+
+
+class ColorMapping:
+    def __init__(self, uids):
+        self.colors = {int(uid): tuple(map(int, np.random.random_integers(50, 256, (3,)))) for uid in uids}
+
+    def __getitem__(self, item):
+        try:
+            return tuple(self.colors[int(uid)] for uid in item)
+        except TypeError:
+            return self.colors[int(item)]
+
+
 '''
 comment out for now because I haven't even made the loaders load RLE/polygons
 
@@ -199,28 +232,6 @@ class SegmentationVisualizer:
 '''
 
 
-def load_and_filter(data_loader, observation_uid, dimensions, observer, object_filter):
-    dimensions = (BuiltinDimension.object_uid,) + tuple(dimensions)
-    uids_values = data_loader.load(observation_uid, dimensions)
-
-    uids_values_by_observer = []
-    for i, dimension in enumerate(dimensions):
-        try:
-            uids_values.append(uids_values[i][observer])
-        except KeyError:
-            raise ValueError(f'Observer {observer} did not make an observation of dimension {dimension} for'
-                             f' observation UID {observation_uid}')
-        except AttributeError:
-            uids_values.append(uids_values[i])
-
-    fused_and_filtered = filter(
-        lambda dim_values: not any(map(data_loader.is_na, dim_values)) and object_filter(*dim_values),
-        zip(*uids_values_by_observer)
-    )
-
-    return tuple(zip(*fused_and_filtered))
-
-
 class BoundingBox2DVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
@@ -242,33 +253,28 @@ class BoundingBox2DVisualizer:
 
     def make_polygons(self, box_data):
         polygon_lists = []
-        origin = self.data_loader.image_coordinate_origin
         for box_list in box_data:
             polygons = []
             for i in range(len(box_list) // 4):
                 polygon = list(self.polygon_maker(box_list[4 * i: 4 * (i + 1)]))
+
+                # Adjust for coordinate origin. Will figure this out later when custom origins are implemented
+                '''
                 for p in range(0, 4, 2):
                     polygon[p] -= origin.x
                 for p in range(1, 4, 2):
                     polygon[p] -= origin.y
+                '''
+
                 polygons.append(polygon)
             polygon_lists.append(polygons)
         return polygon_lists
 
-    @property
-    def color_mapping(self):
-        if 'visualize_cached_color_mapping' not in type(self.data_loader).cache:
-            max_uid = max(self.data_loader.object_uid_name_mapping.uid_to_name.keys())
-            type(self.data_loader).cache['visualize_cached_color_mapping'] = \
-                np.random.random_integers(50, 256, (max_uid + 1, 3)).astype(np.uint8)
-            type(self.data_loader).cache['visualize_cached_color_mapping'][0] = (0, 0, 0)
-        return type(self.data_loader).cache['visualize_cached_color_mapping']
-
     def visualize(self, observation_uid, observer=None,
-                  object_filter=None,
+                  object_filter=None, color_mapping=None,
                   kind='total', mapping=None,
                   line_thickness=1, joint=None,
-                  show_names=True, name_font_size=12,
+                  show_names=None, name_font_size=12,
                   save_on_finish=None):
         if BuiltinDimension.visual_ldr not in self.data_loader.dimensions and \
                 BuiltinDimension.visual_hdr not in self.data_loader.dimensions:
@@ -276,14 +282,24 @@ class BoundingBox2DVisualizer:
                             f' the dataset does not have a Visual LDR or Visual HDR dimension. Dimensions are '
                             f'{self.data_loader.dimensions}')
 
+        # setup object filter
         object_filter = object_filter if object_filter is not None else lambda *__: True
 
+        # setup font and show_names
         font = None
-        if show_names:
+        if show_names is not None:
             if ImageFont is None:
                 raise ValueError('Please install PIL to use image drawing functions.')
             font = ImageFont.truetype('arial.ttf', size=name_font_size)
 
+            if show_names == BuiltinDimension.unreal_name \
+                    and BuiltinDimension.unreal_name not in self.data_loader.dimensions:
+                raise ValueError('Cannot show unreal_name because it is not part of the dataset')
+            elif show_names == BuiltinDimension.mesh_name \
+                    and BuiltinDimension.mesh_name not in self.data_loader.dimensions:
+                raise ValueError('Cannot show mesh_name because it is not part of the dataset')
+
+        # load background image
         if BuiltinDimension.visual_ldr in self.data_loader.dimensions and mapping is None:
             im = self.data_loader.load(observation_uid, BuiltinDimension.visual_ldr)
             im = get_observer_im(im, observation_uid, observer, BuiltinDimension.visual_ldr)
@@ -295,108 +311,82 @@ class BoundingBox2DVisualizer:
             im = get_observer_im(im, observation_uid, observer, BuiltinDimension.visual_hdr)
             im = image_util.to_int(mapping(image_util.to_numpy(im)[:, :, :3]))
 
-        if kind == 'total':
-            if BuiltinDimension.total_bounding_box_2d in self.data_loader.dimensions:
-                all_uids, boxes = self.data_loader.load(
-                    observation_uid, (
-                        BuiltinDimension.object_uid, BuiltinDimension.total_bounding_box_2d
-                    )
-                )
-
-                try:
-                    fused = zip(all_uids[observer], boxes[observer])
-                    filtered = filter(lambda uid_box: uid_box[1] != self.data_loader.na_value and
-                                      object_filter(observation_uid, *uid_box), fused)
-                    uids, boxes =
-                except KeyError:
-                    raise ValueError(f'Observer {observer} was not used to observe'
-                                     f' {BuiltinDimension.get_standard_name(BuiltinDimension.total_bounding_box_2d)}'
-                                     f' for the Observation UID {observation_uid}')
-
-                boxes_uids = zip(*self.data_loader.load(observation_uid, (
-                    BuiltinDimension.total_bounding_box_2d, BuiltinDimension.object_uid
-                )))
-                boxes, uids = tuple(zip(*filter(lambda x: x[0] != self.data_loader.na_value and object_filter(x[1]),
-                                                boxes_uids)))
-                polygons = self.make_polygons(boxes)
-                colors = self.color_mapping[list(uids)]
-                if show_names:
-                    texts = (self.data_loader.object_uid_name_mapping.uid_to_name[int(uid)] for uid in uids)
-                    text_locations = BoundingBox2DVisualizer.get_text_locations(polygons, name_font_size,
-                                                                                line_thickness)
-                    vis = image_util.draw_texts_and_polygons(
-                        im, texts, text_locations, polygons, colors,
-                        font=font, line_thickness=line_thickness, joint=joint
-                    )
-                else:
-                    vis = image_util.draw_texts_and_polygons(
-                        im, None, None, polygons, colors, font=None, line_thickness=line_thickness, joint=joint,
-                        show_text=False
-                    )
-            elif BuiltinDimension.connected_bounding_box_2d in self.data_loader.dimensions:
-                boxes_uids = zip(*self.data_loader.load(observation_uid, (
-                    BuiltinDimension.bounding_box_2d_contiguous, BuiltinDimension.object_uid
-                )))
-                boxes, uids = tuple(zip(*filter(lambda x: x[0] != self.data_loader.na_value and object_filter(x[1]),
-                                                boxes_uids)))
-                boxes = self.get_total_boxes(boxes)
-                polygons = self.make_polygons(boxes)
-                colors = self.color_mapping[list(uids)]
-                if show_names:
-                    texts = (self.data_loader.object_uid_name_mapping.uid_to_name[int(uid)] for uid in uids)
-                    text_locations = BoundingBox2DVisualizer.get_text_locations(polygons, name_font_size,
-                                                                                line_thickness)
-                    vis = image_util.draw_texts_and_polygons(
-                        im, texts, text_locations, polygons, colors,
-                        font=font, line_thickness=line_thickness, joint=joint
-                    )
-                else:
-                    vis = image_util.draw_texts_and_polygons(
-                        im, None, None, polygons, colors, font=None, line_thickness=line_thickness, joint=joint,
-                        show_text=False
-                    )
-            else:
-                raise TypeError(f'Dataset {self.data_loader.name} does not contain 2d total bounding '
-                                f'boxes in any form. Dimensions are {self.data_loader.dimensions}')
-        elif kind == 'contiguous':
-            if BuiltinDimension.bounding_box_2d_contiguous in self.data_loader.dimensions:
-                boxes_uids = zip(*self.data_loader.load(observation_uid, (
-                    BuiltinDimension.bounding_box_2d_contiguous, BuiltinDimension.object_uid
-                )))
-                boxes, uids = tuple(zip(*filter(lambda x: x[0] != self.data_loader.na_value and object_filter(x[1]),
-                                                boxes_uids)))
-                polygons = self.make_polygons(boxes)
-                colors = self.color_mapping[list(uids)]
-                if show_names:
-                    texts = (self.data_loader.object_uid_name_mapping.uid_to_name[int(uid)] for uid in uids)
-                    text_locations = BoundingBox2DVisualizer.get_text_locations(polygons, name_font_size,
-                                                                                line_thickness)
-                    vis = image_util.draw_texts_and_polygons(
-                        im, texts, text_locations, polygons, colors,
-                        font=font, line_thickness=line_thickness, joint=joint
-                    )
-                else:
-                    vis = image_util.draw_texts_and_polygons(
-                        im, None, None, polygons, colors, font=None, line_thickness=line_thickness, joint=joint,
-                        show_text=False
-                    )
-            else:
-                raise TypeError(f'Dataset {self.data_loader.name} does not contain 2d contiguous bounding '
-                                f'boxes in any form. Dimensions are {self.data_loader.dimensions}')
+        # decide which dimension to load
+        if kind == 'connected' or BuiltinDimension.total_bounding_box_2d not in self.data_loader.dimensions:
+            load_dimension = BuiltinDimension.connected_bounding_box_2d
         else:
-            raise ValueError(f'Given bounding box kind {kind} is not a valid kind of bounding box. Choose one of'
-                             f' \'total\' or \'contiguous\'.')
+            load_dimension = BuiltinDimension.total_bounding_box_2d
 
+        # make sure we can actually load it
+        if load_dimension not in self.data_loader.dimensions:
+            raise TypeError(f'Dataset {self.data_loader.name} does not contain {kind} 2D bounding '
+                            f'boxes in any form. Dimensions are {self.data_loader.dimensions}')
+
+        # load boxes, uids and (possibly) names
+        if show_names is not None:
+            if show_names == BuiltinDimension.unreal_name or show_names == BuiltinDimension.mesh_name:
+                boxes, uids, names = load_and_filter(
+                    self.data_loader, observation_uid, (
+                        load_dimension,
+                        BuiltinDimension.object_uid,
+                        show_names
+                    ), observer, object_filter
+                )
+            else:
+                boxes, uids = load_and_filter(
+                    self.data_loader, observation_uid, (
+                        load_dimension,
+                        BuiltinDimension.object_uid
+                    ), observer, object_filter
+                )
+                names = tuple(show_names.get(int(uid), self.data_loader.na_value) for uid in uids)
+        else:
+            boxes, uids = load_and_filter(
+                self.data_loader, observation_uid, (
+                    load_dimension,
+                    BuiltinDimension.object_uid,
+                    show_names
+                ), observer, object_filter
+            )
+            names = None
+
+        # compute total boxes if we loaded connected boxes
+        if kind == 'total' and load_dimension == BuiltinDimension.connected_bounding_box_2d:
+            boxes = self.get_total_boxes(boxes)
+
+        # convert boxes to polygons for rendering
+        polygons = self.make_polygons(boxes.reshape(-1, 1, 4))
+
+        # get box colors from supplied color mapping or from a random mapping
+        color_mapping = color_mapping if color_mapping is not None else ColorMapping(uids)
+        colors = color_mapping[uids]
+
+        # create the visualization image
+        if names is not None:
+            text_locations = BoundingBox2DVisualizer.get_text_locations(polygons, name_font_size,
+                                                                        line_thickness)
+            vis = image_util.draw_texts_and_polygons(
+                im, names, text_locations, polygons, colors,
+                font=font, line_thickness=line_thickness, joint=joint
+            )
+        else:
+            vis = image_util.draw_texts_and_polygons(
+                im, None, None, polygons, colors, font=None, line_thickness=line_thickness, joint=joint,
+                show_text=False
+            )
+
+        # visualize and save if necessary
         plt.imshow(vis)
         plt.show()
         if save_on_finish is not None:
             imageio.imwrite(save_on_finish, vis)
 
+        # return the color mapping in case the user wants to reuse it
+        return color_mapping
 
-def to_local_boxes(global_boxes, box_format):
-    return global_boxes
 
-
+'''
+comment out for now so we can import this file for testing
 class BoundingBox3DVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
@@ -500,15 +490,18 @@ class BoundingBox3DVisualizer:
 
         if show_names:
             pass  # calculate text locations
+'''
 
 
 class DepthVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
 
-    def visualize(self, observation_uid, mapping=None, save_on_finish=None, background_cutoff=50000):
+    def visualize(self, observation_uid, observer=None, mapping=None, save_on_finish=None, background_cutoff=50000):
         if BuiltinDimension.depth in self.data_loader.dimensions:
-            depth = image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.depth))
+            depth = self.data_loader.load(observation_uid, BuiltinDimension.depth)
+            depth = get_observer_im(depth, observation_uid, observer, BuiltinDimension.depth)
+            depth = image_util.to_numpy(depth)
             depth = np.minimum(depth, background_cutoff)
             if mapping == 'ecdf':
                 dist = ecdf(depth.flatten())
@@ -532,19 +525,28 @@ class NormalVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
 
-    def visualize(self, observation_uid, separate_channels=False, save_on_finish=None):
+    def visualize(self, observation_uid, observer=None, separate_channels=False, save_on_finish=None):
         normal = None
         if BuiltinDimension.world_normal in self.data_loader.dimensions:
             normal = image_util.to_numpy(
-                self.data_loader.load(observation_uid, BuiltinDimension.world_normal)
+                get_observer_im(
+                    self.data_loader.load(observation_uid, BuiltinDimension.world_normal),
+                    observation_uid, observer, BuiltinDimension.world_normal
+                )
             )[:, :, :3]
         elif BuiltinDimension.world_tangent in self.data_loader.dimensions and \
                 BuiltinDimension.world_bitangent in self.data_loader.dimensions:
             tangent = image_util.to_numpy(
-                self.data_loader.load(observation_uid, BuiltinDimension.world_tangent)
+                get_observer_im(
+                    self.data_loader.load(observation_uid, BuiltinDimension.world_tangent),
+                    observation_uid, observer, BuiltinDimension.world_tangent
+                )
             )[:, :, :3]
             bitangent = image_util.to_numpy(
-                self.data_loader.load(observation_uid, BuiltinDimension.world_bitangent)
+                get_observer_im(
+                    self.data_loader.load(observation_uid, BuiltinDimension.world_bitangent),
+                    observation_uid, observer, BuiltinDimension.world_bitangent
+                )
             )[:, :, :3]
             normal = np.cross(tangent, bitangent, axis=2)
         if normal is not None:
@@ -578,19 +580,28 @@ class TangentVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
 
-    def visualize(self, observation_uid, separate_channels=False, save_on_finish=None):
+    def visualize(self, observation_uid, observer=None, separate_channels=False, save_on_finish=None):
         tangent = None
         if BuiltinDimension.world_tangent in self.data_loader.dimensions:
             tangent = image_util.to_numpy(
-                self.data_loader.load(observation_uid, BuiltinDimension.world_tangent)
+                get_observer_im(
+                    self.data_loader.load(observation_uid, BuiltinDimension.world_tangent),
+                    observation_uid, observer, BuiltinDimension.world_tangent
+                )
             )[:, :, :3]
         elif BuiltinDimension.world_normal in self.data_loader.dimensions and \
                 BuiltinDimension.world_bitangent in self.data_loader.dimensions:
             normal = image_util.to_numpy(
-                self.data_loader.load(observation_uid, BuiltinDimension.world_normal)
+                get_observer_im(
+                    self.data_loader.load(observation_uid, BuiltinDimension.world_normal),
+                    observation_uid, observer, BuiltinDimension.world_normal
+                )
             )[:, :, :3]
             bitangent = image_util.to_numpy(
-                self.data_loader.load(observation_uid, BuiltinDimension.world_bitangent)
+                get_observer_im(
+                    self.data_loader.load(observation_uid, BuiltinDimension.world_bitangent),
+                    observation_uid, observer, BuiltinDimension.world_bitangent
+                )
             )[:, :, :3]
             tangent = np.cross(bitangent, normal, axis=2)
         if tangent is not None:
@@ -624,19 +635,28 @@ class BitangentVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
 
-    def visualize(self, observation_uid, separate_channels=False, save_on_finish=None):
+    def visualize(self, observation_uid, observer=None, separate_channels=False, save_on_finish=None):
         bitangent = None
         if BuiltinDimension.world_bitangent in self.data_loader.dimensions:
             bitangent = image_util.to_numpy(
-                self.data_loader.load(observation_uid, BuiltinDimension.world_bitangent)
+                get_observer_im(
+                    self.data_loader.load(observation_uid, BuiltinDimension.world_bitangent),
+                    observation_uid, observer, BuiltinDimension.world_bitangent
+                )
             )[:, :, :3]
         elif BuiltinDimension.world_normal in self.data_loader.dimensions and \
                 BuiltinDimension.world_bitangent in self.data_loader.dimensions:
             normal = image_util.to_numpy(
-                self.data_loader.load(observation_uid, BuiltinDimension.world_normal)
+                get_observer_im(
+                    self.data_loader.load(observation_uid, BuiltinDimension.world_normal),
+                    observation_uid, observer, BuiltinDimension.world_normal
+                )
             )[:, :, :3]
             tangent = image_util.to_numpy(
-                self.data_loader.load(observation_uid, BuiltinDimension.world_tangent)
+                get_observer_im(
+                    self.data_loader.load(observation_uid, BuiltinDimension.world_tangent),
+                    observation_uid, observer, BuiltinDimension.world_tangent
+                )
             )[:, :, :3]
             bitangent = np.cross(normal, tangent, axis=2)
         if bitangent is not None:
@@ -670,9 +690,11 @@ class UVVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
 
-    def visualize(self, observation_uid, save_on_finish=None):
+    def visualize(self, observation_uid, observer=None, save_on_finish=None):
         if BuiltinDimension.uv in self.data_loader.dimensions:
-            uv = image_util.to_int(image_util.to_numpy(self.data_loader.load(observation_uid, BuiltinDimension.uv)))
+            im = self.data_loader.load(observation_uid, BuiltinDimension.uv)
+            im = get_observer_im(im, observation_uid, observer, BuiltinDimension.uv)
+            uv = image_util.to_int(image_util.to_numpy(im))
             plt.imshow(uv)
             plt.show()
             if save_on_finish is not None:
@@ -682,6 +704,8 @@ class UVVisualizer:
                              f'Dimensions are {self.data_loader.dimensions}')
 
 
+'''
+comment out for now until Keypoints are implemented in the plugin
 class KeypointsVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
@@ -725,16 +749,20 @@ class KeypointsVisualizer:
         else:
             raise ValueError(f'Dataset {self.data_loader.name} does not contain keypoints in any form. '
                              f'Dimensions are {self.data_loader.dimensions}')
+'''
 
 
 class PositionVisualizer:
     def __init__(self, data_loader):
         self.data_loader = data_loader
 
-    def visualize(self, observation_uid, save_on_finish=None):
-        if BuiltinDimension.world_position in self.data_loader.dimensions:
+    def visualize(self, observation_uid, observer=None, save_on_finish=None):
+        if BuiltinDimension.position in self.data_loader.dimensions:
             position = image_util.to_numpy(
-                self.data_loader.load(observation_uid, BuiltinDimension.world_position)
+                get_observer_im(
+                    self.data_loader.load(observation_uid, BuiltinDimension.position),
+                    observation_uid, observer, BuiltinDimension.position
+                )
             )[:, :, :3]
 
             fig = plt.figure(figsize=(8, 8))
@@ -765,12 +793,12 @@ visualizers = {
     Visualize.visual_hdr: VisualHDRVisualizer,
     Visualize.bounding_box_2d: BoundingBox2DVisualizer,
     Visualize.depth: DepthVisualizer,
-    Visualize.segmentation: SegmentationVisualizer,
+    # Visualize.segmentation: SegmentationVisualizer,
     Visualize.normal: NormalVisualizer,
     Visualize.tangent: TangentVisualizer,
     Visualize.bitangent: BitangentVisualizer,
     Visualize.uv: UVVisualizer,
-    Visualize.keypoints: KeypointsVisualizer,
+    # Visualize.keypoints: KeypointsVisualizer,
     Visualize.position: PositionVisualizer,
 }
 
@@ -782,19 +810,19 @@ visualizer_dimensions = {
         BuiltinDimension.visual_hdr
     },
     Visualize.bounding_box_2d: {
-        BuiltinDimension.bounding_box_2d_contiguous, BuiltinDimension.bounding_box_2d_total
+        BuiltinDimension.connected_bounding_box_2d, BuiltinDimension.total_bounding_box_2d
     },
     Visualize.bounding_box_3d: {
-        BuiltinDimension.bounding_box_3d_custom, BuiltinDimension.bounding_box_3d_global,
-        BuiltinDimension.bounding_box_3d_local
+        BuiltinDimension.custom_bounding_box_3d, BuiltinDimension.global_bounding_box_3d,
+        BuiltinDimension.local_bounding_box_3d
     },
     Visualize.depth: {
         BuiltinDimension.depth
     },
-    Visualize.segmentation: {
-        BuiltinDimension.segmentation, BuiltinDimension.segmentation_rle, BuiltinDimension.segmentation_outline,
-        BuiltinDimension.segmentation_polygon
-    },
+    # Visualize.segmentation: {
+    #    BuiltinDimension.segmentation, BuiltinDimension.segmentation_rle, BuiltinDimension.segmentation_outline,
+    #    BuiltinDimension.segmentation_polygon
+    # },
     Visualize.normal: {
         BuiltinDimension.world_normal, (BuiltinDimension.world_tangent, BuiltinDimension.world_bitangent)
     },
@@ -807,11 +835,11 @@ visualizer_dimensions = {
     Visualize.uv: {
         BuiltinDimension.uv
     },
-    Visualize.keypoints: {
-        BuiltinDimension.keypoints
-    },
+    # Visualize.keypoints: {
+    #    BuiltinDimension.keypoints
+    # },
     Visualize.position: {
-        BuiltinDimension.world_position
+        BuiltinDimension.position
     }
 }
 
@@ -842,33 +870,3 @@ class SimerseVisualizer:
                              f' Must be one of {list(map(str, self.visualizers.keys()))}')
 
         self.visualizers[dimension].visualize(observation_uid, **kwargs)
-
-    @property
-    def color_mapping(self):
-        if 'visualize_cached_color_mapping' not in type(self.data_loader).cache:
-            max_uid = max(self.data_loader.object_uid_name_mapping.uid_to_name.keys())
-            type(self.data_loader).cache['visualize_cached_color_mapping'] = \
-                np.random.random_integers(50, 256, (max_uid + 1, 3)).astype(np.uint8)
-            type(self.data_loader).cache['visualize_cached_color_mapping'][0] = (0, 0, 0)
-        return type(self.data_loader).cache['visualize_cached_color_mapping']
-
-    def set_color_for_uid(self, uid, rgb_color):
-        self.color_mapping[uid] = rgb_color
-
-    def set_color_for_name(self, name, rgb_color):
-        self.color_mapping[self.data_loader.object_uid_name_mapping.name_to_uid[name]] = rgb_color
-
-    def set_color(self, rgb_color, object_name_filter=None, object_uid_filter=None):
-        if object_name_filter is not None or object_uid_filter is not None:
-            object_filter = make_object_uid_filter(object_name_filter, object_uid_filter,
-                                                   self.data_loader.object_uid_name_mapping.uid_to_name)
-            uids = list(filter(object_filter, self.data_loader.object_uid_name_mapping.uid_to_name.keys()))
-            self.color_mapping[uids] = rgb_color
-        else:
-            self.color_mapping[:] = rgb_color
-
-    def get_color_for_uid(self, uid):
-        return self.color_mapping[uid]
-
-    def get_color_for_name(self, name):
-        return self.color_mapping[self.data_loader.object_uid_name_mapping.name_to_uid[name]]

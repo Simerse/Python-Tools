@@ -658,6 +658,10 @@ License:
         def is_na(value):
             return isinstance(value, type(na_value)) and value == na_value
 
+        @property
+        def na_value(self):
+            return na_value
+
     # attach the appropriate batch loader for the dataset
     logger.log('Attaching load_batch function')
     attach_load_batch_function(meta_dict, SimerseDataLoaderInstance, root, logger, na_value)
