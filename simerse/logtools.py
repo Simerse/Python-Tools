@@ -55,10 +55,10 @@ class TempVerbosityLevel:
         self.logger = logger
 
     def __enter__(self):
-        self.logger._verbosity = self.current_verbosity
+        self.logger.verbosity = self.current_verbosity
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.logger._verbosity = self.old_verbosity
+        self.logger.verbosity = self.old_verbosity
 
 
 class Logger:
@@ -77,6 +77,7 @@ class Logger:
         """
         return TempVerbosityLevel(self, contextual_verbosity)
 
+    # noinspection PyCallingNonCallable
     def log(self, message, message_importance=LogVerbosity.MESSAGES):
         """
         Logs a message with a given importance only if this Logger's current verbosity
@@ -99,20 +100,30 @@ class Logger:
         try:
             if self.verbosity >= message_importance:
                 self(message, message_importance)
+                return
         except AttributeError:
             pass
 
-        # noinspection PyTypeChecker
-        if self.verbosity >= LogVerbosity.WARNINGS and issubclass(message_importance, Warning):
-            self(message, message_importance)
-            warnings.warn(message, message_importance)
-        elif self.verbosity >= LogVerbosity.ERRORS and isinstance(message_importance, BaseException):
-            self(message + f'\n\n{message_importance.__name__}: {str(message_importance)}', message_importance)
+        try:
+            # noinspection PyTypeChecker
+            if self.verbosity >= LogVerbosity.WARNINGS and issubclass(message_importance, Warning):
+                self(message, message_importance)
+                warnings.warn(message, message_importance)
+                return
+        except TypeError:
+            pass
+
+        if self.verbosity >= LogVerbosity.ERRORS and isinstance(message_importance, BaseException):
+            self(message + f'\n\n{type(message_importance).__name__}: {str(message_importance)}', message_importance)
             raise message_importance
-        elif self.verbosity >= LogVerbosity.ERRORS and issubclass(message_importance, BaseException):
-            self(message, message_importance)
-            # noinspection PyCallingNonCallable
-            raise message_importance(message)
+
+        try:
+            if self.verbosity >= LogVerbosity.ERRORS and issubclass(message_importance, BaseException):
+                self(message, message_importance)
+                # noinspection PyCallingNonCallable
+                raise message_importance(message)
+        except TypeError:
+            pass
 
     @abc.abstractmethod
     def __call__(self, message, importance):

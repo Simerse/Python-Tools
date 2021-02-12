@@ -43,7 +43,7 @@ class BuiltinDimension:
 
     depth = 'Depth'
 
-    local_bounding_box_3d = 'LocallyBoundingBox3D'
+    local_bounding_box_3d = 'LocalBoundingBox3D'
     global_bounding_box_3d = 'GlobalBoundingBox3D'
     custom_bounding_box_3d = 'CustomBoundingBox3D'
 
@@ -62,7 +62,7 @@ class BuiltinDimension:
     def get_standard_name(dimension_name):
         if BuiltinDimension._inverse_mapping is None:
             BuiltinDimension._inverse_mapping = {}
-            for dimension, value in BuiltinDimension.__dict__:
+            for dimension, value in BuiltinDimension.__dict__.items():
                 if dimension != '_inverse_mapping':
                     BuiltinDimension._inverse_mapping[value] = dimension
         return BuiltinDimension._inverse_mapping.get(dimension_name, dimension_name)
