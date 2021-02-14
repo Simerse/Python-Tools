@@ -38,7 +38,6 @@ if torch is not None:
         if Image is not None and isinstance(im, Image.Image):
             return to_torch(to_float(im), device)
         elif isinstance(im, (list, tuple, set)):
-            print('here')
             return torch.cat([to_torch(i, device) for i in im])
         elif isinstance(im, np.ndarray):
             a = to_float(im)

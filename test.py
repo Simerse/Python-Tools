@@ -1,9 +1,32 @@
 
 from simerse import simerse_data_loader
-from simerse.simerse_keys import BuiltinDimension
+from simerse.simerse_keys import BuiltinDimension, Visualize
 from simerse import logtools
-import matplotlib.pyplot as plt
-import simerse.image_util
+from simerse import simerse_visualize
+
+
+card_suits = (
+    'Clubs',
+    'Diamonds',
+    'Hearts',
+    'Spades'
+)
+
+card_values = (
+    '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'
+)
+
+
+def get_card_name(suit, value):
+    return card_values[int(value)] + ' of ' + card_suits[int(suit)]
+
+
+class CardNameMap:
+    def __init__(self, uids, values, suits):
+        self.mapping = {int(uid): get_card_name(suit, value) for uid, suit, value in zip(uids[None], suits, values)}
+
+    def get(self, uid, default_value):
+        return self.mapping.get(uid, default_value)
 
 
 def card_value_loader_builder(cls):
@@ -24,18 +47,10 @@ with logtools.default_logger.verbosity_temp(logtools.LogVerbosity.EVERYTHING):
         CardValue=card_value_loader_builder, CardSuit=card_suit_loader_builder
     )
 
-    image, camera_view, card_value, card_suit, uids, bb3d, bb2d = dl.load(0, (
-        BuiltinDimension.visual_ldr,
-        BuiltinDimension.camera_view,
-        'CardValue', 'CardSuit',
-        BuiltinDimension.object_uid,
-        BuiltinDimension.local_bounding_box_3d,
-        BuiltinDimension.total_bounding_box_2d
-    ))
-    print(uids)
-    print()
-    print(card_value)
-    print()
-    print(bb2d)
-    plt.imshow(simerse.image_util.to_numpy(image))
-    plt.show()
+    vis_uid = 5
+
+    vis = simerse_visualize.SimerseVisualizer(dl)
+
+    name_map = CardNameMap(*dl.load(vis_uid, (BuiltinDimension.object_uid, 'CardValue', 'CardSuit')))
+
+    vis.visualize(vis_uid, Visualize.bounding_box_2d, line_thickness=4, show_names=name_map)

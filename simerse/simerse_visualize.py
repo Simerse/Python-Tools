@@ -80,25 +80,44 @@ class VisualHDRVisualizer:
 
 
 def load_and_filter(data_loader, observation_uid, dimensions, observer, object_filter):
-    dimensions = (BuiltinDimension.object_uid,) + tuple(dimensions)
+    try:
+        dimensions = tuple(dimensions)
+    except TypeError:
+        dimensions = (dimensions,)
+
+    try:
+        uid_index = dimensions.index(BuiltinDimension.object_uid)
+        dimensions = (BuiltinDimension.object_uid,) + dimensions[:uid_index] + dimensions[uid_index + 1:]
+    except ValueError:
+        uid_index = 0
+        dimensions = (BuiltinDimension.object_uid,) + dimensions
+
     uids_values = data_loader.load(observation_uid, dimensions)
+
+    if isinstance(uids_values[0], dict):
+        observer_it = iter(uids_values[0])
+
+        while observer is None:
+            observer = next(observer_it)
 
     uids_values_by_observer = []
     for i, dimension in enumerate(dimensions):
         try:
-            uids_values.append(uids_values[i][observer])
+            uids_values_by_observer.append(uids_values[i][observer])
         except KeyError:
             raise ValueError(f'Observer {observer} did not make an observation of dimension {dimension} for'
                              f' observation UID {observation_uid}')
-        except AttributeError:
-            uids_values.append(uids_values[i])
+        except (AttributeError, IndexError):
+            uids_values_by_observer.append(uids_values[i])
 
     fused_and_filtered = filter(
         lambda dim_values: not any(map(data_loader.is_na, dim_values)) and object_filter(*dim_values),
         zip(*uids_values_by_observer)
     )
 
-    return tuple(zip(*fused_and_filtered))
+    ret_wrong_order = tuple(zip(*fused_and_filtered))
+
+    return ret_wrong_order[1: uid_index + 1] + (ret_wrong_order[0],) + ret_wrong_order[uid_index + 1:]
 
 
 class ColorMapping:
@@ -121,12 +140,12 @@ class SegmentationVisualizer:
 
     @property
     def color_mapping(self):
-        if 'visualize_cached_color_mapping' not in type(self.data_loader).cache:
+        if 'visualize_cached_color_mapping' not in type(self.data_loader).simerse_cache:
             max_uid = max(self.data_loader.object_uid_name_mapping.uid_to_name.keys())
-            type(self.data_loader).cache['visualize_cached_color_mapping'] = \
+            type(self.data_loader).simerse_cache['visualize_cached_color_mapping'] = \
                 np.random.random_integers(50, 256, (max_uid + 1, 3)).astype(np.uint8)
-            type(self.data_loader).cache['visualize_cached_color_mapping'][0] = (0, 0, 0)
-        return type(self.data_loader).cache['visualize_cached_color_mapping']
+            type(self.data_loader).simerse_cache['visualize_cached_color_mapping'][0] = (0, 0, 0)
+        return type(self.data_loader).simerse_cache['visualize_cached_color_mapping']
 
     def visualize(self, observation_uid,
                   mode='overlay', mapping=None,
@@ -344,8 +363,7 @@ class BoundingBox2DVisualizer:
             boxes, uids = load_and_filter(
                 self.data_loader, observation_uid, (
                     load_dimension,
-                    BuiltinDimension.object_uid,
-                    show_names
+                    BuiltinDimension.object_uid
                 ), observer, object_filter
             )
             names = None
@@ -355,7 +373,7 @@ class BoundingBox2DVisualizer:
             boxes = self.get_total_boxes(boxes)
 
         # convert boxes to polygons for rendering
-        polygons = self.make_polygons(boxes.reshape(-1, 1, 4))
+        polygons = self.make_polygons(boxes)
 
         # get box colors from supplied color mapping or from a random mapping
         color_mapping = color_mapping if color_mapping is not None else ColorMapping(uids)
@@ -393,12 +411,12 @@ class BoundingBox3DVisualizer:
 
     @property
     def color_mapping(self):
-        if 'visualize_cached_color_mapping' not in type(self.data_loader).cache:
+        if 'visualize_cached_color_mapping' not in type(self.data_loader).simerse_cache:
             max_uid = max(self.data_loader.object_uid_name_mapping.uid_to_name.keys())
-            type(self.data_loader).cache['visualize_cached_color_mapping'] = \
+            type(self.data_loader).simerse_cache['visualize_cached_color_mapping'] = \
                 np.random.random_integers(50, 256, (max_uid + 1, 3)).astype(np.uint8)
-            type(self.data_loader).cache['visualize_cached_color_mapping'][0] = (0, 0, 0)
-        return type(self.data_loader).cache['visualize_cached_color_mapping']
+            type(self.data_loader).simerse_cache['visualize_cached_color_mapping'][0] = (0, 0, 0)
+        return type(self.data_loader).simerse_cache['visualize_cached_color_mapping']
 
     def visualize(self, observation_uid,
                   object_name_filter=None, object_uid_filter=None,
@@ -792,6 +810,7 @@ visualizers = {
     Visualize.visual_ldr: VisualLDRVisualizer,
     Visualize.visual_hdr: VisualHDRVisualizer,
     Visualize.bounding_box_2d: BoundingBox2DVisualizer,
+    Visualize.bounding_box_3d: lambda x: None,
     Visualize.depth: DepthVisualizer,
     # Visualize.segmentation: SegmentationVisualizer,
     Visualize.normal: NormalVisualizer,

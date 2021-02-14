@@ -94,8 +94,12 @@ def process_norm_vector_capture(raw):
     return raw[:, :, :3] * 2 - 1
 
 
-def load_meta(meta, logger):
+def load_meta(meta, explicit_folder, logger):
     if isinstance(meta, dict):
+
+        if explicit_folder is None:
+            logger('', ValueError('When using an explicit dataset meta dict the "explicit_folder" argument must'
+                                  ' be a path to the dataset folder'))
 
         for meta_key, value in MetaKey.defaults.items():
             meta.setdefault(meta_key, value)
@@ -104,10 +108,7 @@ def load_meta(meta, logger):
         for meta_key, value in MetaKey.summary_defaults.items():
             summary.setdefault(meta_key, value)
 
-        try:
-            return meta, meta[MetaKey.dataset_name]
-        except KeyError:
-            logger.log('Explicit dataset meta must contain MetaKey.dataset_name', KeyError)
+        return meta, explicit_folder
 
     else:
         import json
@@ -589,12 +590,17 @@ mebibytes = 2 ** 20
 
 
 # noinspection PyPep8Naming
-def SimerseDataLoader(meta, custom_array_maker=default_array_maker, custom_image_maker=default_image_maker,
-                      logger=logtools.default_logger, cache_limit=256 * mebibytes, na_value='N/A',
-                      bounding_box_2d_load_format=BoxFormat.min_max, bounding_box_3d_load_format=BoxFormat.min_max,
-                      **custom_loaders):
+def SimerseDataLoader(
+    meta, explicit_folder=None,
+    logger=logtools.default_logger,
+    custom_array_maker=default_array_maker, custom_image_maker=default_image_maker,
+    na_value='N/A',
+    cache_limit=256 * mebibytes,
+    bounding_box_2d_load_format=BoxFormat.min_max, bounding_box_3d_load_format=BoxFormat.min_max,
+    **custom_loaders
+):
 
-    meta_dict, root = load_meta(meta, logger)
+    meta_dict, root = load_meta(meta, explicit_folder, logger)
     logger.log(f'Retrieved meta data:\n\t{meta_dict}', LogVerbosity.EVERYTHING)
 
     # noinspection PyMethodParameters
@@ -646,7 +652,7 @@ License:
 {self.license}
 """
 
-        cache = SimerseLoaderCache(batches={}, batch_queue=deque(), batch_sizes={}, total_cache_size=[0])
+        simerse_cache = SimerseLoaderCache(batches={}, batch_queue=deque(), batch_sizes={}, total_cache_size=[0])
 
         @staticmethod
         def load_observation(uid):
@@ -741,7 +747,7 @@ def safe_add_batch(batch_number, cache, data, cache_limit, logger):
 def attach_batch_file_loader_json(cls, root, logger, __):
     import json
 
-    cache = cls.cache
+    cache = cls.simerse_cache
 
     def load_batch(batch_number):
         if batch_number not in cache.batches:
@@ -805,7 +811,7 @@ def parse_xml_observation_value(node, na_value):
 def attach_batch_file_loader_xml(cls, root, logger, na_value):
     import xml.etree.ElementTree as ElementTree
 
-    cache = cls.cache
+    cache = cls.simerse_cache
 
     def load_batch(batch_number):
         if batch_number not in cache.batches:
@@ -853,7 +859,7 @@ def attach_batch_file_loader_csv(cls, root, logger, na_value):
     import csv
     import json
 
-    cache = cls.cache
+    cache = cls.simerse_cache
 
     def load_batch(batch_number):
         if batch_number not in cache.batches:
